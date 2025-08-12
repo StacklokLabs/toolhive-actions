@@ -183,11 +183,33 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 git clone https://github.com/StacklokLabs/toolhive-actions.git
 cd toolhive-actions
 
-# Run tests
-npm test
+# Test the actions locally using act (https://github.com/nektos/act)
+act -W .github/workflows/test.yml
 
-# Run linting
-npm run lint
+# Or push to a branch and let GitHub Actions run the tests
+git checkout -b test-branch
+git push origin test-branch
+```
+
+### Testing in Your Own Workflow
+
+To test these actions in your own repository:
+
+```yaml
+name: Test Toolhive Actions
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Toolhive
+        uses: StacklokLabs/toolhive-actions/install@v0
+        
+      - name: Verify installation
+        run: thv version
 ```
 
 ## 📄 License
