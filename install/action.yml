@@ -157,14 +157,14 @@ runs:
           CHECKSUM_URL="https://github.com/stacklok/toolhive/releases/download/${VERSION}/${CHECKSUM_FILE}"
           curl -L -o "$CHECKSUM_FILE" "$CHECKSUM_URL"
           
-          # Verify checksum
+          # Verify checksum - use exact filename match to avoid multiple matches
           if [ "$OS" = "darwin" ]; then
             # macOS uses shasum
-            EXPECTED=$(grep "$FILENAME" "$CHECKSUM_FILE" | awk '{print $1}')
+            EXPECTED=$(grep -E "^[a-f0-9]+[[:space:]]+${FILENAME}$" "$CHECKSUM_FILE" | awk '{print $1}')
             ACTUAL=$(shasum -a 256 "$FILENAME" | awk '{print $1}')
           else
             # Linux and Windows (Git Bash) use sha256sum
-            EXPECTED=$(grep "$FILENAME" "$CHECKSUM_FILE" | awk '{print $1}')
+            EXPECTED=$(grep -E "^[a-f0-9]+[[:space:]]+${FILENAME}$" "$CHECKSUM_FILE" | awk '{print $1}')
             ACTUAL=$(sha256sum "$FILENAME" | awk '{print $1}')
           fi
           
