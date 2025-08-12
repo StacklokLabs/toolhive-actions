@@ -210,6 +210,11 @@ runs:
         # Add to PATH
         echo "$INSTALL_DIR" >> $GITHUB_PATH
         
+        # For Windows, also update PATH for current shell
+        if [ "$OS" = "windows" ]; then
+          echo "PATH=$INSTALL_DIR:$PATH" >> $GITHUB_ENV
+        fi
+        
         echo "✓ Toolhive $VERSION installed successfully"
 
     - name: Use Cached Installation

@@ -191,20 +191,49 @@ runs:
       id: run-server
       shell: bash
       run: |
-        # Run the server
+        # Run the server (thv run spawns in background and returns)
         echo "Starting MCP server..."
-        ${{ steps.build-command.outputs.command }} &
+        RUN_CMD="${{ steps.build-command.outputs.command }}"
+        SERVER_NAME="${{ inputs.name }}"
         
-        # Store the PID
-        SERVER_PID=$!
-        echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
+        if [ -z "$SERVER_NAME" ]; then
+          SERVER_NAME="${{ inputs.server }}"
+        fi
+        
+        # Execute thv run command (it spawns the server in background)
+        echo "Executing: $RUN_CMD"
+        eval "$RUN_CMD"
         
         # Give the server time to start
+        echo "Waiting for server to be ready..."
         sleep 5
         
-        # Check if server is running
-        if ! kill -0 $SERVER_PID 2>/dev/null; then
-          echo "::error::Server failed to start"
+        # Check if server is running using thv list
+        MAX_CHECKS=3
+        CHECK_COUNT=0
+        SERVER_RUNNING=false
+        
+        while [ $CHECK_COUNT -lt $MAX_CHECKS ]; do
+          if thv list | grep -q "$SERVER_NAME"; then
+            echo "✓ Server is running"
+            SERVER_INFO=$(thv list | grep "$SERVER_NAME" | head -1)
+            SERVER_PID=$(echo "$SERVER_INFO" | awk '{print $2}')
+            echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
+            SERVER_RUNNING=true
+            break
+          else
+            CHECK_COUNT=$((CHECK_COUNT + 1))
+            if [ $CHECK_COUNT -lt $MAX_CHECKS ]; then
+              echo "Server not visible yet, waiting... (check $CHECK_COUNT/$MAX_CHECKS)"
+              sleep 3
+            fi
+          fi
+        done
+        
+        if [ "$SERVER_RUNNING" = false ]; then
+          echo "::error::Server failed to start or is not visible in thv list"
+          echo "Attempting to get logs..."
+          thv logs "$SERVER_NAME" 2>/dev/null || echo "Could not retrieve logs"
           exit 1
         fi
         
