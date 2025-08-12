@@ -228,12 +228,3 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 - [Discord](https://discord.gg/stacklok) - Community support and discussions
 - [Documentation](https://docs.stacklok.com/toolhive) - Official Toolhive documentation
 
-## 🙏 Acknowledgments
-
-- The Stacklok team for creating Toolhive
-- The MCP community for the protocol specification
-- Contributors and users of this project
-
----
-
-Made with ❤️ by the Stacklok community
