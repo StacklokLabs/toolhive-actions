@@ -1,0 +1,61 @@
+name: Basic Toolhive Installation
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  install-latest:
+    name: Install Latest Version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Install Toolhive (Latest)
+        id: install
+        uses: StacklokLabs/toolhive-actions/install@v1
+      
+      - name: Verify Installation
+        run: |
+          echo "Installed version: ${{ steps.install.outputs.version }}"
+          echo "Binary path: ${{ steps.install.outputs.path }}"
+          thv version
+          thv --help
+
+  install-specific-version:
+    name: Install Specific Version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Install Toolhive v0.2.5
+        uses: StacklokLabs/toolhive-actions/install@v1
+        with:
+          version: v0.2.5
+      
+      - name: Verify Version
+        run: |
+          thv version
+          # Verify it's the correct version
+          thv version | grep "0.2.5"
+
+  install-matrix:
+    name: Install on ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Install Toolhive
+        uses: StacklokLabs/toolhive-actions/install@v1
+      
+      - name: Test Installation
+        run: |
+          thv version
+          thv registry list | head -5

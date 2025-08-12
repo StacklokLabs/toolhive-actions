@@ -1,0 +1,243 @@
+name: 'Install Toolhive'
+description: 'Install Toolhive CLI for managing MCP servers'
+author: 'Stacklok'
+branding:
+  icon: 'download'
+  color: 'blue'
+
+inputs:
+  version:
+    description: 'Toolhive version to install (e.g., "v0.2.5" or "latest")'
+    required: false
+    default: 'latest'
+  verify-checksum:
+    description: 'Verify the checksum of the downloaded binary'
+    required: false
+    default: 'true'
+  github-token:
+    description: 'GitHub token for API requests'
+    required: false
+    default: ${{ github.token }}
+  install-dir:
+    description: 'Directory to install Toolhive'
+    required: false
+    default: ''
+
+outputs:
+  version:
+    description: 'The installed Toolhive version'
+    value: ${{ steps.install.outputs.version }}
+  path:
+    description: 'The path to the installed Toolhive binary'
+    value: ${{ steps.install.outputs.path }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Detect OS and Architecture
+      id: detect
+      shell: bash
+      run: |
+        # Detect OS
+        case "${{ runner.os }}" in
+          Linux)
+            OS="linux"
+            ;;
+          macOS)
+            OS="darwin"
+            ;;
+          Windows)
+            OS="windows"
+            ;;
+          *)
+            echo "::error::Unsupported OS: ${{ runner.os }}"
+            exit 1
+            ;;
+        esac
+        
+        # Detect Architecture
+        ARCH="${{ runner.arch }}"
+        case "$ARCH" in
+          X64)
+            ARCH="amd64"
+            ;;
+          ARM64)
+            ARCH="arm64"
+            ;;
+          *)
+            echo "::error::Unsupported architecture: ${{ runner.arch }}"
+            exit 1
+            ;;
+        esac
+        
+        echo "os=$OS" >> $GITHUB_OUTPUT
+        echo "arch=$ARCH" >> $GITHUB_OUTPUT
+        echo "Detected OS: $OS, Architecture: $ARCH"
+
+    - name: Determine Version
+      id: version
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        VERSION="${{ inputs.version }}"
+        
+        if [ "$VERSION" = "latest" ]; then
+          echo "Fetching latest version..."
+          VERSION=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            https://api.github.com/repos/stacklok/toolhive/releases/latest \
+            | grep '"tag_name":' \
+            | sed -E 's/.*"([^"]+)".*/\1/')
+          
+          if [ -z "$VERSION" ]; then
+            echo "::error::Failed to fetch latest version"
+            exit 1
+          fi
+        fi
+        
+        # Ensure version starts with 'v'
+        if [[ ! "$VERSION" =~ ^v ]]; then
+          VERSION="v$VERSION"
+        fi
+        
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Using version: $VERSION"
+
+    - name: Setup Cache
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.toolhive
+        key: toolhive-${{ steps.version.outputs.version }}-${{ steps.detect.outputs.os }}-${{ steps.detect.outputs.arch }}
+
+    - name: Download and Install
+      id: install
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        OS="${{ steps.detect.outputs.os }}"
+        ARCH="${{ steps.detect.outputs.arch }}"
+        
+        # Remove 'v' prefix for file naming
+        VERSION_NO_V="${VERSION#v}"
+        
+        # Determine file extension
+        if [ "$OS" = "windows" ]; then
+          EXT="zip"
+        else
+          EXT="tar.gz"
+        fi
+        
+        # Construct download URL
+        FILENAME="toolhive_${VERSION_NO_V}_${OS}_${ARCH}.${EXT}"
+        URL="https://github.com/stacklok/toolhive/releases/download/${VERSION}/${FILENAME}"
+        
+        echo "Downloading from: $URL"
+        
+        # Create installation directory
+        INSTALL_DIR="${{ inputs.install-dir }}"
+        if [ -z "$INSTALL_DIR" ]; then
+          INSTALL_DIR="$HOME/.toolhive/bin"
+        fi
+        mkdir -p "$INSTALL_DIR"
+        
+        # Download the archive
+        TEMP_DIR=$(mktemp -d)
+        cd "$TEMP_DIR"
+        
+        curl -L -o "$FILENAME" "$URL"
+        
+        # Verify checksum if requested
+        if [ "${{ inputs.verify-checksum }}" = "true" ]; then
+          echo "Downloading checksums..."
+          CHECKSUM_FILE="toolhive_${VERSION_NO_V}_checksums.txt"
+          CHECKSUM_URL="https://github.com/stacklok/toolhive/releases/download/${VERSION}/${CHECKSUM_FILE}"
+          curl -L -o "$CHECKSUM_FILE" "$CHECKSUM_URL"
+          
+          # Verify checksum
+          if [ "$OS" = "darwin" ]; then
+            # macOS uses shasum
+            EXPECTED=$(grep "$FILENAME" "$CHECKSUM_FILE" | awk '{print $1}')
+            ACTUAL=$(shasum -a 256 "$FILENAME" | awk '{print $1}')
+          else
+            # Linux and Windows (Git Bash) use sha256sum
+            EXPECTED=$(grep "$FILENAME" "$CHECKSUM_FILE" | awk '{print $1}')
+            ACTUAL=$(sha256sum "$FILENAME" | awk '{print $1}')
+          fi
+          
+          if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "::error::Checksum verification failed!"
+            echo "Expected: $EXPECTED"
+            echo "Actual: $ACTUAL"
+            exit 1
+          fi
+          echo "✓ Checksum verified"
+        fi
+        
+        # Extract the archive
+        if [ "$EXT" = "zip" ]; then
+          unzip -q "$FILENAME"
+        else
+          tar -xzf "$FILENAME"
+        fi
+        
+        # Find and move the binary
+        if [ "$OS" = "windows" ]; then
+          BINARY_NAME="thv.exe"
+        else
+          BINARY_NAME="thv"
+        fi
+        
+        if [ -f "$BINARY_NAME" ]; then
+          mv "$BINARY_NAME" "$INSTALL_DIR/"
+          chmod +x "$INSTALL_DIR/$BINARY_NAME"
+        else
+          echo "::error::Binary not found in archive"
+          exit 1
+        fi
+        
+        # Clean up
+        cd -
+        rm -rf "$TEMP_DIR"
+        
+        # Set outputs
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "path=$INSTALL_DIR/$BINARY_NAME" >> $GITHUB_OUTPUT
+        
+        # Add to PATH
+        echo "$INSTALL_DIR" >> $GITHUB_PATH
+        
+        echo "✓ Toolhive $VERSION installed successfully"
+
+    - name: Use Cached Installation
+      if: steps.cache.outputs.cache-hit == 'true'
+      shell: bash
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        OS="${{ steps.detect.outputs.os }}"
+        
+        INSTALL_DIR="${{ inputs.install-dir }}"
+        if [ -z "$INSTALL_DIR" ]; then
+          INSTALL_DIR="$HOME/.toolhive/bin"
+        fi
+        
+        if [ "$OS" = "windows" ]; then
+          BINARY_NAME="thv.exe"
+        else
+          BINARY_NAME="thv"
+        fi
+        
+        # Add to PATH
+        echo "$INSTALL_DIR" >> $GITHUB_PATH
+        
+        echo "✓ Using cached Toolhive $VERSION"
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "path=$INSTALL_DIR/$BINARY_NAME" >> $GITHUB_OUTPUT
+
+    - name: Verify Installation
+      shell: bash
+      run: |
+        thv version

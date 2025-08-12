@@ -1,0 +1,80 @@
+name: Run Fetch MCP Server
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  run-fetch-server:
+    name: Run Fetch Server
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Install Toolhive
+        uses: StacklokLabs/toolhive-actions/install@v1
+      
+      - name: Run Fetch MCP Server
+        id: fetch-server
+        uses: StacklokLabs/toolhive-actions/run-mcp-server@v1
+        with:
+          server: fetch
+          name: my-fetch-server
+      
+      - name: Display Server Information
+        run: |
+          echo "Server URL: ${{ steps.fetch-server.outputs.url }}"
+          echo "Server Port: ${{ steps.fetch-server.outputs.port }}"
+          echo "Server Status: ${{ steps.fetch-server.outputs.status }}"
+          echo "Container Name: ${{ steps.fetch-server.outputs.container-name }}"
+      
+      - name: List Running Servers
+        run: thv list
+      
+      - name: Test Server Connection
+        run: |
+          # Wait a moment for server to be fully ready
+          sleep 5
+          
+          # Check if server is responding
+          SERVER_URL="${{ steps.fetch-server.outputs.url }}"
+          if [ -n "$SERVER_URL" ]; then
+            echo "Testing connection to $SERVER_URL"
+            # Note: Actual testing would depend on the server's API
+          fi
+      
+      - name: View Server Logs
+        if: always()
+        run: thv logs my-fetch-server || true
+
+  run-with-custom-port:
+    name: Run Server with Custom Port
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Install Toolhive
+        uses: StacklokLabs/toolhive-actions/install@v1
+      
+      - name: Run Fetch Server on Port 9000
+        id: custom-port-server
+        uses: StacklokLabs/toolhive-actions/run-mcp-server@v1
+        with:
+          server: fetch
+          proxy-port: 9000
+          wait-for-ready: true
+          timeout: 60
+      
+      - name: Verify Port
+        run: |
+          echo "Server is running on port: ${{ steps.custom-port-server.outputs.port }}"
+          # Verify it's using port 9000
+          if [ "${{ steps.custom-port-server.outputs.port }}" = "9000" ]; then
+            echo "✓ Server is using the correct port"
+          else
+            echo "✗ Server is not using the expected port"
+            exit 1
+          fi

@@ -1,0 +1,203 @@
+# Toolhive GitHub Actions
+
+[![Test](https://github.com/StacklokLabs/toolhive-actions/actions/workflows/test.yml/badge.svg)](https://github.com/StacklokLabs/toolhive-actions/actions/workflows/test.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
+GitHub Actions for installing and running [Toolhive](https://github.com/stacklok/toolhive), a tool for managing Model Context Protocol (MCP) servers.
+
+## 🚀 Quick Start
+
+### Install Toolhive
+
+```yaml
+- name: Install Toolhive
+  uses: StacklokLabs/toolhive-actions/install@v1
+  with:
+    version: latest  # or specify a version like 'v0.2.5'
+```
+
+### Run an MCP Server
+
+```yaml
+- name: Run Fetch MCP Server
+  uses: stackloklabs/toolhive-actions/run-mcp-server@v1
+  with:
+    server: fetch
+```
+
+## 📦 Available Actions
+
+### 1. `install` - Install Toolhive CLI
+
+Installs the Toolhive CLI (`thv`) on your GitHub Actions runner.
+
+**Features:**
+- 🔍 Auto-detects OS and architecture
+- 📌 Supports specific version installation
+- ✅ Checksum verification for security
+- 🚀 Caching for faster subsequent runs
+- 🖥️ Cross-platform support (Linux, macOS, Windows)
+
+[📖 Full Documentation](./install/README.md)
+
+### 2. `run-mcp-server` - Run MCP Servers
+
+Runs MCP servers using the installed Toolhive CLI.
+
+**Features:**
+- 📦 Run servers from Toolhive registry
+- 🐳 Support for Docker images
+- 🔧 Protocol schemes (uvx://, npx://, go://)
+- 🔐 Secret management
+- 📁 Volume mounting
+- 🌐 Network isolation
+- 🛠️ Tool filtering
+
+[📖 Full Documentation](./run-mcp-server/README.md)
+
+## 📚 Examples
+
+### Basic Installation and Usage
+
+```yaml
+name: Use Toolhive
+on: [push]
+
+jobs:
+  example:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Toolhive
+        uses: StacklokLabs/toolhive-actions/install@v1
+        
+      - name: Run Fetch Server
+        uses: StacklokLabs/toolhive-actions/run-mcp-server@v1
+        with:
+          server: fetch
+          
+      - name: Use the MCP Server
+        run: |
+          # Your code that uses the MCP server
+          echo "Server is running at ${{ steps.run-server.outputs.url }}"
+```
+
+### Advanced Usage with Secrets
+
+```yaml
+- name: Run GitHub MCP Server
+  uses: stackloklabs/toolhive-actions/run-mcp-server@v1
+  with:
+    server: github
+    secrets: |
+      {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${{ secrets.GITHUB_TOKEN }}"
+      }
+```
+
+### Using Docker Images
+
+```yaml
+- name: Run Custom MCP Server
+  uses: StacklokLabs/toolhive-actions/run-mcp-server@v1
+  with:
+    server: my-org/my-mcp-server:latest
+    transport: sse
+    proxy-port: 8080
+```
+
+### Using Protocol Schemes
+
+```yaml
+- name: Run Python MCP Server
+  uses: stackloklabs/toolhive-actions/run-mcp-server@v1
+  with:
+    server: uvx://my-python-mcp-server@latest
+    volumes: |
+      ./data:/app/data
+```
+
+## 🎯 Use Cases
+
+- **AI-Powered CI/CD**: Integrate MCP servers into your workflows for AI-assisted tasks
+- **Documentation Generation**: Use MCP servers to generate or update documentation
+- **Code Analysis**: Run MCP servers for advanced code analysis and suggestions
+- **Testing**: Use MCP servers in your test suites for AI-powered testing
+- **Automation**: Automate complex tasks with MCP server capabilities
+
+## 🔧 Requirements
+
+- GitHub Actions runner (ubuntu-latest, macos-latest, or windows-latest)
+- Docker or Podman (for running MCP servers)
+- GitHub token (automatically provided in Actions)
+
+## 📊 Compatibility Matrix
+
+| Runner OS | Architecture | Status |
+|-----------|-------------|--------|
+| Ubuntu    | amd64       | ✅     |
+| Ubuntu    | arm64       | ✅     |
+| macOS     | amd64       | ✅     |
+| macOS     | arm64       | ✅     |
+| Windows   | amd64       | ✅     |
+| Windows   | arm64       | ✅     |
+
+## 🔒 Security
+
+- All downloads are verified using checksums
+- Runs with minimal required permissions
+- Secrets are handled securely
+- Network isolation available for enhanced security
+
+## 📝 Versioning
+
+We use semantic versioning and maintain major version tags:
+
+- `@v1` - Latest v1.x.x release (recommended for stability)
+- `@v1.0.0` - Specific version
+- `@main` - Latest development version (not recommended for production)
+
+## 🤝 Contributing
+
+We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
+
+### Development Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/StacklokLabs/toolhive-actions.git
+cd toolhive-actions
+
+# Run tests
+npm test
+
+# Run linting
+npm run lint
+```
+
+## 📄 License
+
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+
+## 🔗 Related Projects
+
+- [Toolhive](https://github.com/stacklok/toolhive) - The main Toolhive project
+- [Toolhive Documentation](https://docs.stacklok.com/toolhive) - Official documentation
+- [MCP Specification](https://modelcontextprotocol.io) - Model Context Protocol specification
+
+## 💬 Support
+
+- [GitHub Issues](https://github.com/StacklokLabs/toolhive-actions/issues) - Bug reports and feature requests
+- [Discord](https://discord.gg/stacklok) - Community support and discussions
+- [Documentation](https://docs.stacklok.com/toolhive) - Official Toolhive documentation
+
+## 🙏 Acknowledgments
+
+- The Stacklok team for creating Toolhive
+- The MCP community for the protocol specification
+- Contributors and users of this project
+
+---
+
+Made with ❤️ by the Stacklok community

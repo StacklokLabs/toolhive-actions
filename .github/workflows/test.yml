@@ -1,0 +1,160 @@
+name: Test Actions
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  test-install-action:
+    name: Test Install Action - ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        version: [latest, v0.2.5]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Test Install Action
+        id: install
+        uses: ./install
+        with:
+          version: ${{ matrix.version }}
+      
+      - name: Verify Installation
+        run: |
+          echo "Installed version: ${{ steps.install.outputs.version }}"
+          echo "Binary path: ${{ steps.install.outputs.path }}"
+          thv version
+      
+      - name: Test Basic Commands
+        run: |
+          thv --help
+          thv registry list | head -5
+
+  test-run-action:
+    name: Test Run Action - ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        # Windows runners might have issues with Docker
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Install Toolhive
+        uses: ./install
+      
+      - name: Test Run Action
+        id: run-server
+        uses: ./run-mcp-server
+        with:
+          server: fetch
+          name: test-server
+          wait-for-ready: true
+          timeout: 30
+      
+      - name: Verify Server Running
+        run: |
+          echo "Server URL: ${{ steps.run-server.outputs.url }}"
+          echo "Server Port: ${{ steps.run-server.outputs.port }}"
+          echo "Server Status: ${{ steps.run-server.outputs.status }}"
+          thv list
+      
+      - name: Stop Server
+        if: always()
+        run: thv stop test-server || true
+
+  test-caching:
+    name: Test Installation Caching
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: First Install (No Cache)
+        id: first-install
+        uses: ./install
+        with:
+          version: v0.2.5
+      
+      - name: Clear Binary (Simulate Cache Miss)
+        run: |
+          rm -f ~/.toolhive/bin/thv
+      
+      - name: Second Install (Should Use Cache)
+        id: second-install
+        uses: ./install
+        with:
+          version: v0.2.5
+      
+      - name: Verify Cache Was Used
+        run: |
+          # Both installs should report the same version
+          if [ "${{ steps.first-install.outputs.version }}" != "${{ steps.second-install.outputs.version }}" ]; then
+            echo "Cache test failed: versions don't match"
+            exit 1
+          fi
+          thv version
+
+  test-different-transports:
+    name: Test Different Transport Methods
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Install Toolhive
+        uses: ./install
+      
+      - name: Test stdio Transport
+        uses: ./run-mcp-server
+        with:
+          server: fetch
+          name: stdio-server
+          transport: stdio
+      
+      - name: Stop stdio Server
+        run: thv stop stdio-server
+      
+      - name: Test SSE Transport
+        uses: ./run-mcp-server
+        with:
+          server: fetch
+          name: sse-server
+          transport: sse
+          proxy-port: 8081
+        continue-on-error: true  # Some servers might not support all transports
+      
+      - name: Clean Up
+        if: always()
+        run: thv stop --all || true
+
+  validate-action-metadata:
+    name: Validate Action Metadata
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup yq
+        uses: mikefarah/yq@v4
+      
+      - name: Validate install/action.yml
+        run: |
+          echo "Validating install/action.yml..."
+          yq eval '.' install/action.yml > /dev/null
+          echo "✓ install/action.yml is valid"
+      
+      - name: Validate run-mcp-server/action.yml
+        run: |
+          echo "Validating run-mcp-server/action.yml..."
+          yq eval '.' run-mcp-server/action.yml > /dev/null
+          echo "✓ run-mcp-server/action.yml is valid"

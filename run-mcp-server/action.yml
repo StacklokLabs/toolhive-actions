@@ -1,0 +1,290 @@
+name: 'Run MCP Server'
+description: 'Run a Model Context Protocol (MCP) server using Toolhive'
+author: 'Stacklok'
+branding:
+  icon: 'server'
+  color: 'green'
+
+inputs:
+  server:
+    description: 'MCP server to run (registry name, Docker image, or protocol scheme)'
+    required: true
+  name:
+    description: 'Custom name for the server instance'
+    required: false
+    default: ''
+  transport:
+    description: 'Transport method (stdio, sse, streamable-http)'
+    required: false
+    default: 'stdio'
+  proxy-port:
+    description: 'Port for the proxy server'
+    required: false
+    default: ''
+  target-port:
+    description: 'Target port for SSE/streamable-http transport'
+    required: false
+    default: ''
+  # TODO: Implement secrets support
+  # Toolhive has built-in secrets management with encrypted storage and 1Password integration
+  # Future implementation should support:
+  # - Mapping GitHub secrets to Toolhive secrets
+  # - Using --secret flag with thv run command
+  # - Support for 1Password references (op://vault/item/field)
+  volumes:
+    description: 'Volume mounts (one per line, format: host_path:container_path)'
+    required: false
+    default: ''
+  network-isolation:
+    description: 'Enable network isolation'
+    required: false
+    default: 'false'
+  tools:
+    description: 'Comma-separated list of tools to expose'
+    required: false
+    default: ''
+  arguments:
+    description: 'Additional arguments to pass to the server'
+    required: false
+    default: ''
+  ca-cert:
+    description: 'Path to CA certificate for TLS'
+    required: false
+    default: ''
+  permission-profile:
+    description: 'Path to custom permission profile JSON'
+    required: false
+    default: ''
+  wait-for-ready:
+    description: 'Wait for server to be ready before continuing'
+    required: false
+    default: 'true'
+  timeout:
+    description: 'Timeout in seconds for server to be ready'
+    required: false
+    default: '30'
+
+outputs:
+  url:
+    description: 'The URL of the running MCP server'
+    value: ${{ steps.run-server.outputs.url }}
+  port:
+    description: 'The port of the running MCP server'
+    value: ${{ steps.run-server.outputs.port }}
+  status:
+    description: 'The status of the MCP server'
+    value: ${{ steps.run-server.outputs.status }}
+  container-name:
+    description: 'The name of the container running the server'
+    value: ${{ steps.run-server.outputs.container-name }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check Prerequisites
+      shell: bash
+      run: |
+        # Check if Toolhive is installed
+        if ! command -v thv &> /dev/null; then
+          echo "::error::Toolhive CLI (thv) is not installed. Please use the install action first."
+          exit 1
+        fi
+        
+        # Check if Docker or Podman is available
+        if command -v docker &> /dev/null; then
+          echo "Using Docker as container runtime"
+          echo "CONTAINER_RUNTIME=docker" >> $GITHUB_ENV
+        elif command -v podman &> /dev/null; then
+          echo "Using Podman as container runtime"
+          echo "CONTAINER_RUNTIME=podman" >> $GITHUB_ENV
+        else
+          echo "::error::Neither Docker nor Podman is available. Please install a container runtime."
+          exit 1
+        fi
+
+    # TODO: Add secrets preparation step
+    # This should handle:
+    # - Setting up Toolhive secrets provider if needed
+    # - Mapping GitHub secrets to Toolhive secrets
+    # - Supporting both encrypted and 1Password providers
+
+    - name: Build Run Command
+      id: build-command
+      shell: bash
+      run: |
+        # Start building the command
+        CMD="thv run"
+        
+        # Add name if provided
+        if [ -n "${{ inputs.name }}" ]; then
+          CMD="$CMD --name ${{ inputs.name }}"
+        fi
+        
+        # Add transport
+        if [ -n "${{ inputs.transport }}" ] && [ "${{ inputs.transport }}" != "stdio" ]; then
+          CMD="$CMD --transport ${{ inputs.transport }}"
+        fi
+        
+        # Add proxy port
+        if [ -n "${{ inputs.proxy-port }}" ]; then
+          CMD="$CMD --proxy-port ${{ inputs.proxy-port }}"
+        fi
+        
+        # Add target port
+        if [ -n "${{ inputs.target-port }}" ]; then
+          CMD="$CMD --target-port ${{ inputs.target-port }}"
+        fi
+        
+        # Add network isolation
+        if [ "${{ inputs.network-isolation }}" = "true" ]; then
+          CMD="$CMD --isolate-network"
+        fi
+        
+        # Add CA certificate
+        if [ -n "${{ inputs.ca-cert }}" ]; then
+          CMD="$CMD --ca-cert ${{ inputs.ca-cert }}"
+        fi
+        
+        # Add permission profile
+        if [ -n "${{ inputs.permission-profile }}" ]; then
+          CMD="$CMD --permission-profile ${{ inputs.permission-profile }}"
+        fi
+        
+        # Add volumes
+        if [ -n "${{ inputs.volumes }}" ]; then
+          IFS=$'\n'
+          for volume in ${{ inputs.volumes }}; do
+            if [ -n "$volume" ]; then
+              CMD="$CMD --volume $volume"
+            fi
+          done
+          unset IFS
+        fi
+        
+        # Add tools filter
+        if [ -n "${{ inputs.tools }}" ]; then
+          IFS=','
+          for tool in ${{ inputs.tools }}; do
+            tool=$(echo "$tool" | xargs)  # Trim whitespace
+            if [ -n "$tool" ]; then
+              CMD="$CMD --tools $tool"
+            fi
+          done
+          unset IFS
+        fi
+        
+        # TODO: Add secrets to command
+        # Example: --secret github,target=GITHUB_PERSONAL_ACCESS_TOKEN
+        
+        # Add the server
+        CMD="$CMD ${{ inputs.server }}"
+        
+        # Add additional arguments
+        if [ -n "${{ inputs.arguments }}" ]; then
+          CMD="$CMD -- ${{ inputs.arguments }}"
+        fi
+        
+        echo "Command: $CMD"
+        echo "command=$CMD" >> $GITHUB_OUTPUT
+
+    - name: Run MCP Server
+      id: run-server
+      shell: bash
+      run: |
+        # Run the server
+        echo "Starting MCP server..."
+        ${{ steps.build-command.outputs.command }} &
+        
+        # Store the PID
+        SERVER_PID=$!
+        echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
+        
+        # Give the server time to start
+        sleep 5
+        
+        # Check if server is running
+        if ! kill -0 $SERVER_PID 2>/dev/null; then
+          echo "::error::Server failed to start"
+          exit 1
+        fi
+        
+        # Get server information
+        SERVER_INFO=$(thv list | grep -E "${{ inputs.server }}|${{ inputs.name }}" | head -1)
+        
+        if [ -z "$SERVER_INFO" ]; then
+          echo "::warning::Could not retrieve server information"
+          echo "status=running" >> $GITHUB_OUTPUT
+        else
+          # Parse server information
+          PORT=$(echo "$SERVER_INFO" | awk '{print $5}')
+          URL=$(echo "$SERVER_INFO" | awk '{print $4}')
+          STATUS=$(echo "$SERVER_INFO" | awk '{print $3}')
+          CONTAINER_NAME=$(echo "$SERVER_INFO" | awk '{print $1}')
+          
+          echo "port=$PORT" >> $GITHUB_OUTPUT
+          echo "url=$URL" >> $GITHUB_OUTPUT
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          echo "container-name=$CONTAINER_NAME" >> $GITHUB_OUTPUT
+          
+          echo "Server is running:"
+          echo "  URL: $URL"
+          echo "  Port: $PORT"
+          echo "  Status: $STATUS"
+          echo "  Container: $CONTAINER_NAME"
+        fi
+
+    - name: Wait for Server Ready
+      if: inputs.wait-for-ready == 'true'
+      shell: bash
+      run: |
+        echo "Waiting for server to be ready..."
+        
+        TIMEOUT=${{ inputs.timeout }}
+        ELAPSED=0
+        
+        while [ $ELAPSED -lt $TIMEOUT ]; do
+          # Check if server is in running state
+          STATUS=$(thv list | grep -E "${{ inputs.server }}|${{ inputs.name }}" | awk '{print $3}')
+          
+          if [ "$STATUS" = "running" ]; then
+            echo "✓ Server is ready"
+            
+            # Additional health check if URL is available
+            if [ -n "${{ steps.run-server.outputs.url }}" ]; then
+              URL="${{ steps.run-server.outputs.url }}"
+              # Try to connect to the server
+              if curl -s -o /dev/null -w "%{http_code}" "$URL" | grep -q "200\|404"; then
+                echo "✓ Server is responding"
+              fi
+            fi
+            
+            exit 0
+          fi
+          
+          echo "Waiting... ($ELAPSED/$TIMEOUT seconds)"
+          sleep 2
+          ELAPSED=$((ELAPSED + 2))
+        done
+        
+        echo "::error::Server did not become ready within $TIMEOUT seconds"
+        exit 1
+
+    - name: Setup Cleanup
+      if: always()
+      shell: bash
+      run: |
+        # Create a cleanup script that will be called on job completion
+        cat > /tmp/cleanup-mcp-server.sh << 'EOF'
+        #!/bin/bash
+        if [ -n "${{ inputs.name }}" ]; then
+          thv stop "${{ inputs.name }}" || true
+        else
+          thv stop "${{ inputs.server }}" || true
+        fi
+        EOF
+        
+        chmod +x /tmp/cleanup-mcp-server.sh
+        
+        # Note: In a real implementation, we'd want to register this
+        # as a post-job cleanup action
+        echo "Cleanup script created at /tmp/cleanup-mcp-server.sh"
