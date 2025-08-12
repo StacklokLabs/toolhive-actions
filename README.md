@@ -129,19 +129,33 @@ jobs:
 ## 🔧 Requirements
 
 - GitHub Actions runner (ubuntu-latest, macos-latest, or windows-latest)
-- Docker or Podman (for running MCP servers)
+- Docker or Podman (for running MCP servers on Linux)
 - GitHub token (automatically provided in Actions)
 
 ## 📊 Compatibility Matrix
 
-| Runner OS | Architecture | Status |
-|-----------|-------------|--------|
-| Ubuntu    | amd64       | ✅     |
-| Ubuntu    | arm64       | ✅     |
-| macOS     | amd64       | ✅     |
-| macOS     | arm64       | ✅     |
-| Windows   | amd64       | ✅     |
-| Windows   | arm64       | ✅     |
+| Runner OS | Architecture | Install | Run Server | Notes |
+|-----------|-------------|---------|------------|-------|
+| Ubuntu    | amd64       | ✅      | ✅         | Fully supported |
+| Ubuntu    | arm64       | ✅      | ✅         | Fully supported |
+| macOS     | amd64       | ✅      | ⚠️         | See [#3](https://github.com/StacklokLabs/toolhive-actions/issues/3) |
+| macOS     | arm64       | ✅      | ⚠️         | See [#3](https://github.com/StacklokLabs/toolhive-actions/issues/3) |
+| Windows   | amd64       | ⚠️      | ✅         | See [#2](https://github.com/StacklokLabs/toolhive-actions/issues/2) |
+| Windows   | arm64       | ⚠️      | ✅         | See [#2](https://github.com/StacklokLabs/toolhive-actions/issues/2) |
+
+## ⚠️ Known Issues
+
+### Windows: PowerShell PATH Issue ([#2](https://github.com/StacklokLabs/toolhive-actions/issues/2))
+The `thv` command may not be recognized in PowerShell after installation. **Workarounds:**
+- Use `shell: bash` in your workflow steps
+- Reference the full path: `${{ steps.install.outputs.path }}`
+
+### macOS: Container Runtime Not Available ([#3](https://github.com/StacklokLabs/toolhive-actions/issues/3))
+Toolhive cannot run MCP servers on macOS runners due to missing container runtime. **Workarounds:**
+- Use Linux runners for running MCP servers
+- Use macOS only for installation testing
+
+For the latest status and updates on these issues, please check the [issues page](https://github.com/StacklokLabs/toolhive-actions/issues).
 
 ## 🔒 Security
 
