@@ -16,14 +16,14 @@ This action installs the Toolhive CLI (`thv`) on GitHub Actions runners, enablin
 
 ```yaml
 - name: Install Toolhive
-  uses: StacklokLabs/toolhive-actions/install@v1
+  uses: StacklokLabs/toolhive-actions/install@v0
 ```
 
 ### Install Specific Version
 
 ```yaml
 - name: Install Toolhive v0.2.5
-  uses: StacklokLabs/toolhive-actions/install@v1
+  uses: StacklokLabs/toolhive-actions/install@v0
   with:
     version: v0.2.5
 ```
@@ -32,7 +32,7 @@ This action installs the Toolhive CLI (`thv`) on GitHub Actions runners, enablin
 
 ```yaml
 - name: Install Toolhive to custom directory
-  uses: StacklokLabs/toolhive-actions/install@v1
+  uses: StacklokLabs/toolhive-actions/install@v0
   with:
     install-dir: /opt/toolhive
 ```
@@ -41,7 +41,7 @@ This action installs the Toolhive CLI (`thv`) on GitHub Actions runners, enablin
 
 ```yaml
 - name: Install Toolhive without checksum verification
-  uses: StacklokLabs/toolhive-actions/install@v1
+  uses: StacklokLabs/toolhive-actions/install@v0
   with:
     verify-checksum: false
 ```
@@ -82,7 +82,7 @@ jobs:
       
       - name: Install Toolhive
         id: install-toolhive
-        uses: StacklokLabs/toolhive-actions/install@v1
+        uses: StacklokLabs/toolhive-actions/install@v0
         with:
           version: latest
       
@@ -112,7 +112,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Install Toolhive
-        uses: StacklokLabs/toolhive-actions/install@v1
+        uses: StacklokLabs/toolhive-actions/install@v0
         with:
           version: ${{ matrix.version }}
       
@@ -126,14 +126,14 @@ The action automatically caches installations. Here's how it works:
 
 ```yaml
 - name: Install Toolhive (first run - downloads)
-  uses: StacklokLabs/toolhive-actions/install@v1
+  uses: StacklokLabs/toolhive-actions/install@v0
   with:
     version: v0.2.5
 
 # In subsequent runs with the same version/OS/arch,
 # the cached version will be used automatically
 - name: Install Toolhive (subsequent runs - uses cache)
-  uses: StacklokLabs/toolhive-actions/install@v1
+  uses: StacklokLabs/toolhive-actions/install@v0
   with:
     version: v0.2.5
 ```
@@ -156,7 +156,7 @@ The action automatically caches installations. Here's how it works:
 If you encounter GitHub API rate limiting issues, ensure you're using the `github-token` input:
 
 ```yaml
-- uses: StacklokLabs/toolhive-actions/install@v1
+- uses: StacklokLabs/toolhive-actions/install@v0
   with:
     github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
@@ -169,7 +169,7 @@ If checksum verification fails, you can:
 2. Temporarily disable verification (not recommended for production):
 
 ```yaml
-- uses: StacklokLabs/toolhive-actions/install@v1
+- uses: StacklokLabs/toolhive-actions/install@v0
   with:
     verify-checksum: false
 ```
@@ -180,7 +180,7 @@ On Linux runners, if you encounter permission issues:
 
 ```yaml
 - name: Install Toolhive
-  uses: StacklokLabs/toolhive-actions/install@v1
+  uses: StacklokLabs/toolhive-actions/install@v0
   
 - name: Fix permissions
   run: chmod +x ~/.toolhive/bin/thv
@@ -192,7 +192,7 @@ On Windows runners, if `thv` is not found after installation:
 
 ```yaml
 - name: Install Toolhive
-  uses: StacklokLabs/toolhive-actions/install@v1
+  uses: StacklokLabs/toolhive-actions/install@v0
   
 - name: Verify installation
   shell: pwsh

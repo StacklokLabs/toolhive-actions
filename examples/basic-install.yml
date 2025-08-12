@@ -15,7 +15,7 @@ jobs:
       
       - name: Install Toolhive (Latest)
         id: install
-        uses: StacklokLabs/toolhive-actions/install@v1
+        uses: StacklokLabs/toolhive-actions/install@v0
       
       - name: Verify Installation
         run: |
@@ -32,7 +32,7 @@ jobs:
         uses: actions/checkout@v4
       
       - name: Install Toolhive v0.2.5
-        uses: StacklokLabs/toolhive-actions/install@v1
+        uses: StacklokLabs/toolhive-actions/install@v0
         with:
           version: v0.2.5
       
@@ -53,7 +53,7 @@ jobs:
         uses: actions/checkout@v4
       
       - name: Install Toolhive
-        uses: StacklokLabs/toolhive-actions/install@v1
+        uses: StacklokLabs/toolhive-actions/install@v0
       
       - name: Test Installation
         run: |

@@ -11,7 +11,7 @@ GitHub Actions for installing and running [Toolhive](https://github.com/stacklok
 
 ```yaml
 - name: Install Toolhive
-  uses: StacklokLabs/toolhive-actions/install@v1
+  uses: StacklokLabs/toolhive-actions/install@v0
   with:
     version: latest  # or specify a version like 'v0.2.5'
 ```
@@ -20,7 +20,7 @@ GitHub Actions for installing and running [Toolhive](https://github.com/stacklok
 
 ```yaml
 - name: Run Fetch MCP Server
-  uses: stackloklabs/toolhive-actions/run-mcp-server@v1
+  uses: stackloklabs/toolhive-actions/run-mcp-server@v0
   with:
     server: fetch
 ```
@@ -70,10 +70,10 @@ jobs:
       - uses: actions/checkout@v4
       
       - name: Install Toolhive
-        uses: StacklokLabs/toolhive-actions/install@v1
+        uses: StacklokLabs/toolhive-actions/install@v0
         
       - name: Run Fetch Server
-        uses: StacklokLabs/toolhive-actions/run-mcp-server@v1
+        uses: StacklokLabs/toolhive-actions/run-mcp-server@v0
         with:
           server: fetch
           
@@ -87,7 +87,7 @@ jobs:
 
 ```yaml
 - name: Run GitHub MCP Server
-  uses: stackloklabs/toolhive-actions/run-mcp-server@v1
+  uses: stackloklabs/toolhive-actions/run-mcp-server@v0
   with:
     server: github
     secrets: |
@@ -100,7 +100,7 @@ jobs:
 
 ```yaml
 - name: Run Custom MCP Server
-  uses: StacklokLabs/toolhive-actions/run-mcp-server@v1
+  uses: StacklokLabs/toolhive-actions/run-mcp-server@v0
   with:
     server: my-org/my-mcp-server:latest
     transport: sse
@@ -111,7 +111,7 @@ jobs:
 
 ```yaml
 - name: Run Python MCP Server
-  uses: stackloklabs/toolhive-actions/run-mcp-server@v1
+  uses: stackloklabs/toolhive-actions/run-mcp-server@v0
   with:
     server: uvx://my-python-mcp-server@latest
     volumes: |
@@ -168,8 +168,8 @@ For the latest status and updates on these issues, please check the [issues page
 
 We use semantic versioning and maintain major version tags:
 
-- `@v1` - Latest v1.x.x release (recommended for stability)
-- `@v1.0.0` - Specific version
+- `@v0` - Latest v0.x.x release (recommended for stability)
+- `@v0.0.2` - Specific version
 - `@main` - Latest development version (not recommended for production)
 
 ## 🤝 Contributing

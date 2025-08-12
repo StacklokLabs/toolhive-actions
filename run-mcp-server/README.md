@@ -22,10 +22,10 @@ This action runs Model Context Protocol (MCP) servers using Toolhive, enabling A
 
 ```yaml
 - name: Install Toolhive
-  uses: StacklokLabs/toolhive-actions/install@v1
+  uses: StacklokLabs/toolhive-actions/install@v0
 
 - name: Run Fetch MCP Server
-  uses: StacklokLabs/toolhive-actions/run-mcp-server@v1
+  uses: StacklokLabs/toolhive-actions/run-mcp-server@v0
   with:
     server: fetch
 ```
@@ -34,7 +34,7 @@ This action runs Model Context Protocol (MCP) servers using Toolhive, enabling A
 
 ```yaml
 - name: Run Custom MCP Server
-  uses: StacklokLabs/toolhive-actions/run-mcp-server@v1
+  uses: StacklokLabs/toolhive-actions/run-mcp-server@v0
   with:
     server: ghcr.io/my-org/my-mcp-server:latest
     transport: sse
@@ -46,19 +46,19 @@ This action runs Model Context Protocol (MCP) servers using Toolhive, enabling A
 ```yaml
 # Python package via uvx
 - name: Run Python MCP Server
-  uses: StacklokLabs/toolhive-actions/run-mcp-server@v1
+  uses: StacklokLabs/toolhive-actions/run-mcp-server@v0
   with:
     server: uvx://my-python-mcp@latest
 
 # Node.js package via npx
 - name: Run Node.js MCP Server
-  uses: StacklokLabs/toolhive-actions/run-mcp-server@v1
+  uses: StacklokLabs/toolhive-actions/run-mcp-server@v0
   with:
     server: npx://my-node-mcp@latest
 
 # Go package
 - name: Run Go MCP Server
-  uses: StacklokLabs/toolhive-actions/run-mcp-server@v1
+  uses: StacklokLabs/toolhive-actions/run-mcp-server@v0
   with:
     server: go://github.com/user/mcp-server@latest
 ```
@@ -67,7 +67,7 @@ This action runs Model Context Protocol (MCP) servers using Toolhive, enabling A
 
 ```yaml
 - name: Run MCP Server with Full Configuration
-  uses: StacklokLabs/toolhive-actions/run-mcp-server@v1
+  uses: StacklokLabs/toolhive-actions/run-mcp-server@v0
   with:
     server: my-mcp-server
     name: custom-instance
@@ -118,7 +118,7 @@ This action runs Model Context Protocol (MCP) servers using Toolhive, enabling A
 ```yaml
 - name: Run MCP Server
   id: mcp
-  uses: StacklokLabs/toolhive-actions/run-mcp-server@v1
+  uses: StacklokLabs/toolhive-actions/run-mcp-server@v0
   with:
     server: fetch
 
@@ -136,13 +136,13 @@ This action runs Model Context Protocol (MCP) servers using Toolhive, enabling A
 
 ```yaml
 - name: Run GitHub MCP Server
-  uses: StacklokLabs/toolhive-actions/run-mcp-server@v1
+  uses: StacklokLabs/toolhive-actions/run-mcp-server@v0
   with:
     server: github
     name: github-server
 
 - name: Run Fetch MCP Server
-  uses: StacklokLabs/toolhive-actions/run-mcp-server@v1
+  uses: StacklokLabs/toolhive-actions/run-mcp-server@v0
   with:
     server: fetch
     name: fetch-server
@@ -158,7 +158,7 @@ This action runs Model Context Protocol (MCP) servers using Toolhive, enabling A
   uses: actions/checkout@v4
 
 - name: Run Analysis Server with Code Access
-  uses: StacklokLabs/toolhive-actions/run-mcp-server@v1
+  uses: StacklokLabs/toolhive-actions/run-mcp-server@v0
   with:
     server: code-analyzer
     volumes: |
@@ -170,7 +170,7 @@ This action runs Model Context Protocol (MCP) servers using Toolhive, enabling A
 
 ```yaml
 - name: Run Isolated MCP Server
-  uses: StacklokLabs/toolhive-actions/run-mcp-server@v1
+  uses: StacklokLabs/toolhive-actions/run-mcp-server@v0
   with:
     server: sensitive-processor
     network-isolation: true
@@ -181,7 +181,7 @@ This action runs Model Context Protocol (MCP) servers using Toolhive, enabling A
 
 ```yaml
 - name: Run Server with Limited Tools
-  uses: StacklokLabs/toolhive-actions/run-mcp-server@v1
+  uses: StacklokLabs/toolhive-actions/run-mcp-server@v0
   with:
     server: multi-tool-server
     tools: safe_read,safe_write
@@ -310,7 +310,7 @@ The action automatically detects Docker or Podman. If you have both, Docker is p
   run: echo "CONTAINER_RUNTIME=podman" >> $GITHUB_ENV
 
 - name: Run MCP Server
-  uses: StacklokLabs/toolhive-actions/run-mcp-server@v1
+  uses: StacklokLabs/toolhive-actions/run-mcp-server@v0
   with:
     server: fetch
 ```
