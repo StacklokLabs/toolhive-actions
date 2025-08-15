@@ -1,0 +1,141 @@
+name: 'MCP Configuration'
+description: 'Persist MCP server configurations from Toolhive to a file or artifact'
+author: 'Stacklok'
+branding:
+  icon: 'save'
+  color: 'purple'
+
+inputs:
+  output-file:
+    description: 'Path to the output file where MCP server configuration will be saved'
+    required: false
+    default: 'mcp-servers.json'
+  artifact-name:
+    description: 'Name of the artifact to upload (if artifact upload is enabled)'
+    required: false
+    default: 'mcp-server-config'
+  upload-artifact:
+    description: 'Whether to upload the configuration as a GitHub Actions artifact'
+    required: false
+    default: 'false'
+  label-filter:
+    description: 'Label filter for MCP servers (e.g., "environment=production")'
+    required: false
+    default: ''
+
+outputs:
+  config-file:
+    description: 'Path to the saved MCP server configuration file'
+    value: ${{ steps.persist-config.outputs.config-file }}
+  server-count:
+    description: 'Number of MCP servers in the configuration'
+    value: ${{ steps.persist-config.outputs.server-count }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check thv installation
+      shell: bash
+      run: |
+        if ! command -v thv &> /dev/null; then
+          echo "::error::thv is not installed. Please use the stacklok/toolhive-actions/install action first."
+          exit 1
+        fi
+        echo "✅ thv found at: $(which thv)"
+        echo "thv version: $(thv version)"
+
+    - name: Persist MCP server configuration
+      id: persist-config
+      shell: bash
+      run: |
+        echo "📝 Fetching MCP server configuration..."
+        
+        # Build the thv list command
+        THV_CMD="thv list --format=mcpservers"
+        
+        # Add label filter if provided
+        if [ -n "${{ inputs.label-filter }}" ]; then
+          THV_CMD="$THV_CMD -l '${{ inputs.label-filter }}'"
+          echo "Using label filter: ${{ inputs.label-filter }}"
+        fi
+        
+        # Get the MCP servers configuration in JSON format
+        echo "Executing: $THV_CMD"
+        if eval "$THV_CMD" > "${{ inputs.output-file }}" 2>/dev/null; then
+          echo "✅ Successfully retrieved MCP server configuration"
+        else
+          echo "::warning::Failed to fetch MCP server configuration with format=mcpservers"
+          # Fallback to empty JSON if command fails
+          echo "{}" > "${{ inputs.output-file }}"
+        fi
+        
+        # Check if the file was created and has content
+        if [ ! -s "${{ inputs.output-file }}" ]; then
+          echo "::warning::No MCP servers found or configuration is empty"
+          echo "{}" > "${{ inputs.output-file }}"
+        fi
+        
+        # Validate JSON format
+        if ! jq empty "${{ inputs.output-file }}" 2>/dev/null; then
+          echo "::warning::Invalid JSON format in configuration file"
+          # Try to get raw output for debugging
+          echo "Raw output:"
+          cat "${{ inputs.output-file }}"
+          # Create empty valid JSON
+          echo "{}" > "${{ inputs.output-file }}"
+        fi
+        
+        # Count the number of servers
+        SERVER_COUNT=0
+        if [ -f "${{ inputs.output-file }}" ]; then
+          # Try different JSON structures
+          SERVER_COUNT=$(jq 'if type == "array" then length elif type == "object" and has("mcpServers") then .mcpServers | length elif type == "object" then keys | length else 0 end' "${{ inputs.output-file }}" 2>/dev/null || echo "0")
+        fi
+        
+        echo "✅ MCP server configuration saved to: ${{ inputs.output-file }}"
+        echo "📊 Number of servers: ${SERVER_COUNT}"
+        
+        # Set outputs
+        echo "config-file=${{ inputs.output-file }}" >> $GITHUB_OUTPUT
+        echo "server-count=${SERVER_COUNT}" >> $GITHUB_OUTPUT
+        
+        # Display configuration summary
+        echo "### MCP Server Configuration Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- **Configuration file**: \`${{ inputs.output-file }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **Number of servers**: ${SERVER_COUNT}" >> $GITHUB_STEP_SUMMARY
+        if [ -n "${{ inputs.label-filter }}" ]; then
+          echo "- **Label filter**: \`${{ inputs.label-filter }}\`" >> $GITHUB_STEP_SUMMARY
+        fi
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Show server names if available
+        if [ "${SERVER_COUNT}" -gt 0 ]; then
+          echo "#### Configured Servers:" >> $GITHUB_STEP_SUMMARY
+          
+          # Try to extract server names from different possible JSON structures
+          if jq -e '.mcpServers' "${{ inputs.output-file }}" >/dev/null 2>&1; then
+            # Structure with mcpServers field
+            jq -r '.mcpServers | to_entries[] | "- \(.key)"' "${{ inputs.output-file }}" >> $GITHUB_STEP_SUMMARY 2>/dev/null
+          elif jq -e 'type == "array"' "${{ inputs.output-file }}" >/dev/null 2>&1; then
+            # Array structure
+            jq -r '.[] | "- \(.name // .id // .server // "unnamed")"' "${{ inputs.output-file }}" >> $GITHUB_STEP_SUMMARY 2>/dev/null
+          elif jq -e 'type == "object"' "${{ inputs.output-file }}" >/dev/null 2>&1; then
+            # Object structure (server names as keys)
+            jq -r 'keys[] | "- \(.)"' "${{ inputs.output-file }}" >> $GITHUB_STEP_SUMMARY 2>/dev/null
+          fi
+        fi
+        
+        # Display the configuration content for debugging
+        echo ""
+        echo "Configuration content:"
+        jq . "${{ inputs.output-file }}" 2>/dev/null || cat "${{ inputs.output-file }}"
+
+    - name: Upload configuration as artifact
+      if: inputs.upload-artifact == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ inputs.output-file }}
+        retention-days: 30
+        if-no-files-found: warn

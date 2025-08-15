@@ -1,0 +1,37 @@
+name: MCP Configuration Example
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  save-mcp-config:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Install Toolhive
+        uses: stacklok/toolhive-actions/install@main
+      
+      - name: Run Fetch Server
+        uses: stacklok/toolhive-actions/run-mcp-server@main
+        with:
+          server: fetch
+      
+      - name: Run GitHub Server
+        uses: stacklok/toolhive-actions/run-mcp-server@main
+        with:
+          server: github
+      
+      - name: Save MCP Configuration
+        id: config
+        uses: stacklok/toolhive-actions/mcp-config@main
+        with:
+          upload-artifact: 'true'
+      
+      - name: Show Configuration
+        run: |
+          echo "Saved ${{ steps.config.outputs.server-count }} servers"
+          cat mcp-servers.json

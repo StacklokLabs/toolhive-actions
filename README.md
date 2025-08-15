@@ -55,6 +55,18 @@ Runs MCP servers using the installed Toolhive CLI.
 
 [📖 Full Documentation](./run-mcp-server/README.md)
 
+### 3. `mcp-config` - Save MCP Configuration
+
+Persists MCP server configurations to a file and optionally uploads as an artifact.
+
+**Features:**
+- 💾 Save MCP server configurations
+- 📤 Upload as GitHub Actions artifact
+- 🏷️ Filter servers by labels
+- 📊 JSON format output
+
+[📖 Full Documentation](./mcp-config/README.md)
+
 ## 📚 Examples
 
 ### Basic Installation and Usage
