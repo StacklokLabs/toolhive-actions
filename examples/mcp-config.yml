@@ -12,7 +12,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       
-      - name: Install Toolhive
+      - name: Install ToolHive
         uses: stacklok/toolhive-actions/install@main
       
       - name: Run Fetch Server

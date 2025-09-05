@@ -1,16 +1,16 @@
-# Toolhive GitHub Actions
+# ToolHive GitHub Actions
 
 [![Test](https://github.com/StacklokLabs/toolhive-actions/actions/workflows/test.yml/badge.svg)](https://github.com/StacklokLabs/toolhive-actions/actions/workflows/test.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-GitHub Actions for installing and running [Toolhive](https://github.com/stacklok/toolhive), a tool for managing Model Context Protocol (MCP) servers.
+GitHub Actions for installing and running [ToolHive](https://github.com/stacklok/toolhive), a tool for managing Model Context Protocol (MCP) servers.
 
 ## 🚀 Quick Start
 
-### Install Toolhive
+### Install ToolHive
 
 ```yaml
-- name: Install Toolhive
+- name: Install ToolHive
   uses: StacklokLabs/toolhive-actions/install@v0
   with:
     version: latest  # or specify a version like 'v0.2.5'
@@ -27,9 +27,9 @@ GitHub Actions for installing and running [Toolhive](https://github.com/stacklok
 
 ## 📦 Available Actions
 
-### 1. `install` - Install Toolhive CLI
+### 1. `install` - Install ToolHive CLI
 
-Installs the Toolhive CLI (`thv`) on your GitHub Actions runner.
+Installs the ToolHive CLI (`thv`) on your GitHub Actions runner.
 
 **Features:**
 - 🔍 Auto-detects OS and architecture
@@ -42,10 +42,10 @@ Installs the Toolhive CLI (`thv`) on your GitHub Actions runner.
 
 ### 2. `run-mcp-server` - Run MCP Servers
 
-Runs MCP servers using the installed Toolhive CLI.
+Runs MCP servers using the installed ToolHive CLI.
 
 **Features:**
-- 📦 Run servers from Toolhive registry
+- 📦 Run servers from ToolHive registry
 - 🐳 Support for Docker images
 - 🔧 Protocol schemes (uvx://, npx://, go://)
 - 🔐 Secret management
@@ -72,7 +72,7 @@ Persists MCP server configurations to a file and optionally uploads as an artifa
 ### Basic Installation and Usage
 
 ```yaml
-name: Use Toolhive
+name: Use ToolHive
 on: [push]
 
 jobs:
@@ -81,7 +81,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - name: Install Toolhive
+      - name: Install ToolHive
         uses: StacklokLabs/toolhive-actions/install@v0
         
       - name: Run Fetch Server
@@ -163,7 +163,7 @@ The `thv` command may not be recognized in PowerShell after installation. **Work
 - Reference the full path: `${{ steps.install.outputs.path }}`
 
 ### macOS: Container Runtime Not Available ([#3](https://github.com/StacklokLabs/toolhive-actions/issues/3))
-Toolhive cannot run MCP servers on macOS runners due to missing container runtime. **Workarounds:**
+ToolHive cannot run MCP servers on macOS runners due to missing container runtime. **Workarounds:**
 - Use Linux runners for running MCP servers
 - Use macOS only for installation testing
 
@@ -208,7 +208,7 @@ git push origin test-branch
 To test these actions in your own repository:
 
 ```yaml
-name: Test Toolhive Actions
+name: Test ToolHive Actions
 on: [push, pull_request]
 
 jobs:
@@ -217,7 +217,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - name: Install Toolhive
+      - name: Install ToolHive
         uses: StacklokLabs/toolhive-actions/install@v0
         
       - name: Verify installation
@@ -230,13 +230,13 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 
 ## 🔗 Related Projects
 
-- [Toolhive](https://github.com/stacklok/toolhive) - The main Toolhive project
-- [Toolhive Documentation](https://docs.stacklok.com/toolhive) - Official documentation
+- [ToolHive](https://github.com/stacklok/toolhive) - The main ToolHive project
+- [ToolHive Documentation](https://docs.stacklok.com/toolhive) - Official documentation
 - [MCP Specification](https://modelcontextprotocol.io) - Model Context Protocol specification
 
 ## 💬 Support
 
 - [GitHub Issues](https://github.com/StacklokLabs/toolhive-actions/issues) - Bug reports and feature requests
 - [Discord](https://discord.gg/stacklok) - Community support and discussions
-- [Documentation](https://docs.stacklok.com/toolhive) - Official Toolhive documentation
+- [Documentation](https://docs.stacklok.com/toolhive) - Official ToolHive documentation
 

@@ -1,11 +1,11 @@
-# Toolhive GitHub Actions - Comprehensive Plan
+# ToolHive GitHub Actions - Comprehensive Plan
 
 ## Overview
-This project provides GitHub Actions for installing and running Toolhive, a tool for managing Model Context Protocol (MCP) servers. The actions enable CI/CD workflows to easily integrate MCP servers for AI-powered development tasks.
+This project provides GitHub Actions for installing and running ToolHive, a tool for managing Model Context Protocol (MCP) servers. The actions enable CI/CD workflows to easily integrate MCP servers for AI-powered development tasks.
 
 ## Architecture Decision: Single Repository
 We will use a **single repository** (`toolhive-actions`) containing multiple actions for the following reasons:
-- Both actions are closely related to Toolhive functionality
+- Both actions are closely related to ToolHive functionality
 - Easier maintenance and synchronized versioning
 - Shared utilities and common code
 - Users can reference all actions from one repository
@@ -13,8 +13,8 @@ We will use a **single repository** (`toolhive-actions`) containing multiple act
 
 ## Actions to Implement
 
-### 1. Install Toolhive Action (`install`)
-**Purpose**: Download and install the Toolhive CLI (`thv`) on GitHub Actions runners.
+### 1. Install ToolHive Action (`install`)
+**Purpose**: Download and install the ToolHive CLI (`thv`) on GitHub Actions runners.
 
 **Key Features**:
 - Auto-detect runner OS (Linux, macOS, Windows) and architecture (amd64, arm64)
@@ -25,20 +25,20 @@ We will use a **single repository** (`toolhive-actions`) containing multiple act
 - Cache installation for faster subsequent runs
 
 **Inputs**:
-- `version`: Toolhive version to install (default: 'latest')
+- `version`: ToolHive version to install (default: 'latest')
 - `verify-checksum`: Whether to verify download checksum (default: true)
 - `github-token`: GitHub token for API requests (default: ${{ github.token }})
 
 **Outputs**:
-- `version`: Installed Toolhive version
+- `version`: Installed ToolHive version
 - `path`: Path to installed binary
 
 ### 2. Run MCP Server Action (`run-mcp-server`)
-**Purpose**: Run MCP servers using the installed Toolhive CLI.
+**Purpose**: Run MCP servers using the installed ToolHive CLI.
 
 **Key Features**:
 - Support multiple server sources:
-  - Toolhive registry (by name)
+  - ToolHive registry (by name)
   - Docker images
   - Protocol schemes (uvx://, npx://, go://)
 - Configure transport methods (stdio, sse, streamable-http)
@@ -138,7 +138,7 @@ https://github.com/stacklok/toolhive/releases/download/${VERSION}/toolhive_${VER
 - Test matrix across:
   - OS: [ubuntu-latest, macos-latest, windows-latest]
   - Architecture: [amd64, arm64] (where available)
-  - Toolhive versions: [latest, specific versions]
+  - ToolHive versions: [latest, specific versions]
 
 ### Example Workflows
 - Demonstrate real-world usage patterns
@@ -178,7 +178,7 @@ https://github.com/stacklok/toolhive/releases/download/${VERSION}/toolhive_${VER
 - Document security best practices
 
 ## Future Enhancements
-- Support for Toolhive configuration files
+- Support for ToolHive configuration files
 - Integration with GitHub Environments
 - Metrics and telemetry options
 - Support for multiple server instances
@@ -202,7 +202,7 @@ https://github.com/stacklok/toolhive/releases/download/${VERSION}/toolhive_${VER
 5. Week 5: Community feedback and iteration
 
 ## Maintenance Plan
-- Regular updates for new Toolhive releases
+- Regular updates for new ToolHive releases
 - Monitor and respond to issues
 - Keep dependencies updated
 - Maintain compatibility with GitHub Actions changes

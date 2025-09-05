@@ -1,5 +1,5 @@
 name: 'Run MCP Server'
-description: 'Run a Model Context Protocol (MCP) server using Toolhive'
+description: 'Run a Model Context Protocol (MCP) server using ToolHive'
 author: 'Stacklok'
 branding:
   icon: 'server'
@@ -26,9 +26,9 @@ inputs:
     required: false
     default: ''
   # TODO: Implement secrets support
-  # Toolhive has built-in secrets management with encrypted storage and 1Password integration
+  # ToolHive has built-in secrets management with encrypted storage and 1Password integration
   # Future implementation should support:
-  # - Mapping GitHub secrets to Toolhive secrets
+  # - Mapping GitHub secrets to ToolHive secrets
   # - Using --secret flag with thv run command
   # - Support for 1Password references (op://vault/item/field)
   volumes:
@@ -84,9 +84,9 @@ runs:
     - name: Check Prerequisites
       shell: bash
       run: |
-        # Check if Toolhive is installed
+        # Check if ToolHive is installed
         if ! command -v thv &> /dev/null; then
-          echo "::error::Toolhive CLI (thv) is not installed. Please use the install action first."
+          echo "::error::ToolHive CLI (thv) is not installed. Please use the install action first."
           exit 1
         fi
         
@@ -104,8 +104,8 @@ runs:
 
     # TODO: Add secrets preparation step
     # This should handle:
-    # - Setting up Toolhive secrets provider if needed
-    # - Mapping GitHub secrets to Toolhive secrets
+    # - Setting up ToolHive secrets provider if needed
+    # - Mapping GitHub secrets to ToolHive secrets
     # - Supporting both encrypted and 1Password providers
 
     - name: Build Run Command
