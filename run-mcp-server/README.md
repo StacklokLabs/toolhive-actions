@@ -1,10 +1,10 @@
 # Run MCP Server Action
 
-This action runs Model Context Protocol (MCP) servers using Toolhive, enabling AI-powered capabilities in your GitHub Actions workflows.
+This action runs Model Context Protocol (MCP) servers using ToolHive, enabling AI-powered capabilities in your GitHub Actions workflows.
 
 ## Features
 
-- 📦 **Multiple server sources**: Run from Toolhive registry, Docker images, or protocol schemes
+- 📦 **Multiple server sources**: Run from ToolHive registry, Docker images, or protocol schemes
 - 🔧 **Flexible configuration**: Support for different transport methods and configurations
 - 📁 **Volume mounting**: Mount local directories into server containers
 - 🌐 **Network control**: Optional network isolation for enhanced security
@@ -13,7 +13,7 @@ This action runs Model Context Protocol (MCP) servers using Toolhive, enabling A
 
 ## Prerequisites
 
-- Toolhive CLI must be installed (use the `install` action first)
+- ToolHive CLI must be installed (use the `install` action first)
 - Docker or Podman must be available on the runner
 
 ## Usage
@@ -21,7 +21,7 @@ This action runs Model Context Protocol (MCP) servers using Toolhive, enabling A
 ### Basic Usage
 
 ```yaml
-- name: Install Toolhive
+- name: Install ToolHive
   uses: StacklokLabs/toolhive-actions/install@v0
 
 - name: Run Fetch MCP Server
@@ -252,9 +252,9 @@ Example permission profile:
 
 Secrets support is planned for a future release. The implementation will include:
 
-- Integration with Toolhive's encrypted secrets storage
+- Integration with ToolHive's encrypted secrets storage
 - Support for 1Password integration
-- Mapping GitHub secrets to Toolhive secrets
+- Mapping GitHub secrets to ToolHive secrets
 - Secure passing of API keys and tokens to MCP servers
 
 For now, you can set environment variables directly in your workflow if needed.
@@ -269,9 +269,9 @@ For now, you can set environment variables directly in your workflow if needed.
   run: docker version
 ```
 
-2. Verify Toolhive is installed:
+2. Verify ToolHive is installed:
 ```yaml
-- name: Check Toolhive
+- name: Check ToolHive
   run: thv version
 ```
 
@@ -349,10 +349,10 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](../LIC
 
 - [GitHub Issues](https://github.com/StacklokLabs/toolhive-actions/issues)
 - [Discord Community](https://discord.gg/stacklok)
-- [Toolhive Documentation](https://docs.stacklok.com/toolhive)
+- [ToolHive Documentation](https://docs.stacklok.com/toolhive)
 
 ## Related Documentation
 
-- [Toolhive CLI Reference](https://docs.stacklok.com/toolhive/reference/cli/thv)
+- [ToolHive CLI Reference](https://docs.stacklok.com/toolhive/reference/cli/thv)
 - [MCP Specification](https://modelcontextprotocol.io)
-- [Toolhive Registry](https://docs.stacklok.com/toolhive/guides-cli/registry)
+- [ToolHive Registry](https://docs.stacklok.com/toolhive/guides-cli/registry)

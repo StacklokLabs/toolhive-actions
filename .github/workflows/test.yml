@@ -53,7 +53,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
       
-      - name: Install Toolhive
+      - name: Install ToolHive
         uses: ./install
       
       - name: Test Run Action
@@ -115,7 +115,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
       
-      - name: Install Toolhive
+      - name: Install ToolHive
         uses: ./install
       
       - name: Test stdio Transport

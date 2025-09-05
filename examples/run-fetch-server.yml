@@ -13,7 +13,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       
-      - name: Install Toolhive
+      - name: Install ToolHive
         uses: StacklokLabs/toolhive-actions/install@v0
       
       - name: Run Fetch MCP Server
@@ -56,7 +56,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       
-      - name: Install Toolhive
+      - name: Install ToolHive
         uses: StacklokLabs/toolhive-actions/install@v0
       
       - name: Run Fetch Server on Port 9000

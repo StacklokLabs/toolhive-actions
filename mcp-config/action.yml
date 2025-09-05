@@ -1,5 +1,5 @@
 name: 'MCP Configuration'
-description: 'Persist MCP server configurations from Toolhive to a file or artifact'
+description: 'Persist MCP server configurations from ToolHive to a file or artifact'
 author: 'Stacklok'
 branding:
   icon: 'save'

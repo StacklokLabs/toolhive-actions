@@ -1,5 +1,5 @@
-name: 'Install Toolhive'
-description: 'Install Toolhive CLI for managing MCP servers'
+name: 'Install ToolHive'
+description: 'Install ToolHive CLI for managing MCP servers'
 author: 'Stacklok'
 branding:
   icon: 'download'
@@ -7,7 +7,7 @@ branding:
 
 inputs:
   version:
-    description: 'Toolhive version to install (e.g., "v0.2.5" or "latest")'
+    description: 'ToolHive version to install (e.g., "v0.2.5" or "latest")'
     required: false
     default: 'latest'
   verify-checksum:
@@ -19,16 +19,16 @@ inputs:
     required: false
     default: ${{ github.token }}
   install-dir:
-    description: 'Directory to install Toolhive'
+    description: 'Directory to install ToolHive'
     required: false
     default: ''
 
 outputs:
   version:
-    description: 'The installed Toolhive version'
+    description: 'The installed ToolHive version'
     value: ${{ steps.install.outputs.version }}
   path:
-    description: 'The path to the installed Toolhive binary'
+    description: 'The path to the installed ToolHive binary'
     value: ${{ steps.install.outputs.path }}
 
 runs:
@@ -215,7 +215,7 @@ runs:
           echo "PATH=$INSTALL_DIR:$PATH" >> $GITHUB_ENV
         fi
         
-        echo "✓ Toolhive $VERSION installed successfully"
+        echo "✓ ToolHive $VERSION installed successfully"
 
     - name: Use Cached Installation
       if: steps.cache.outputs.cache-hit == 'true'
@@ -238,7 +238,7 @@ runs:
         # Add to PATH
         echo "$INSTALL_DIR" >> $GITHUB_PATH
         
-        echo "✓ Using cached Toolhive $VERSION"
+        echo "✓ Using cached ToolHive $VERSION"
         echo "version=$VERSION" >> $GITHUB_OUTPUT
         echo "path=$INSTALL_DIR/$BINARY_NAME" >> $GITHUB_OUTPUT
 

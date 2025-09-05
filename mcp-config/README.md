@@ -1,6 +1,6 @@
 # MCP Configuration Action
 
-This GitHub Action persists MCP (Model Context Protocol) server configurations from Toolhive to a file and optionally uploads it as an artifact.
+This GitHub Action persists MCP (Model Context Protocol) server configurations from ToolHive to a file and optionally uploads it as an artifact.
 
 ## Description
 
@@ -14,7 +14,7 @@ The `mcp-config` action retrieves the current MCP server configuration using the
 
 ## Prerequisites
 
-- Toolhive (`thv`) must be installed in your workflow. Use the `stacklok/toolhive-actions/install` action first.
+- ToolHive (`thv`) must be installed in your workflow. Use the `stacklok/toolhive-actions/install` action first.
 - MCP servers should be configured and running if you want to capture their configuration.
 
 ## Inputs
@@ -86,7 +86,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - name: Install Toolhive
+      - name: Install ToolHive
         uses: stacklok/toolhive-actions/install@main
       
       - name: Run Fetch MCP Server
@@ -122,7 +122,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - name: Install Toolhive
+      - name: Install ToolHive
         uses: stacklok/toolhive-actions/install@main
       
       # ... setup MCP servers ...
@@ -182,14 +182,14 @@ The action saves the MCP server configuration in JSON format as returned by `thv
 }
 ```
 
-The exact structure depends on your Toolhive version and configured servers.
+The exact structure depends on your ToolHive version and configured servers.
 
 ## Troubleshooting
 
 ### No MCP servers found
 
 If the action reports no MCP servers, ensure that:
-1. Toolhive is properly installed
+1. ToolHive is properly installed
 2. MCP servers are configured and running
 3. The `thv` command is in the PATH
 4. If using label filters, ensure servers have the correct labels
@@ -197,7 +197,7 @@ If the action reports no MCP servers, ensure that:
 ### Invalid JSON format
 
 If the configuration file contains invalid JSON:
-1. Check your Toolhive version supports the `--format=mcpservers` flag
+1. Check your ToolHive version supports the `--format=mcpservers` flag
 2. Ensure no MCP servers have malformed configurations
 3. Check the raw output in the action logs for debugging
 
@@ -217,4 +217,4 @@ If artifact upload fails:
 
 ## License
 
-This action is part of the Stacklok Toolhive Actions collection and is licensed under the same terms as the parent repository.
+This action is part of the Stacklok ToolHive Actions collection and is licensed under the same terms as the parent repository.

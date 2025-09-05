@@ -1,4 +1,4 @@
-name: Basic Toolhive Installation
+name: Basic ToolHive Installation
 on:
   push:
     branches: [ main ]
@@ -13,7 +13,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       
-      - name: Install Toolhive (Latest)
+      - name: Install ToolHive (Latest)
         id: install
         uses: StacklokLabs/toolhive-actions/install@v0
       
@@ -31,7 +31,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       
-      - name: Install Toolhive v0.2.5
+      - name: Install ToolHive v0.2.5
         uses: StacklokLabs/toolhive-actions/install@v0
         with:
           version: v0.2.5
@@ -52,7 +52,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       
-      - name: Install Toolhive
+      - name: Install ToolHive
         uses: StacklokLabs/toolhive-actions/install@v0
       
       - name: Test Installation

@@ -1,6 +1,6 @@
-# Install Toolhive Action
+# Install ToolHive Action
 
-This action installs the Toolhive CLI (`thv`) on GitHub Actions runners, enabling you to manage MCP (Model Context Protocol) servers in your workflows.
+This action installs the ToolHive CLI (`thv`) on GitHub Actions runners, enabling you to manage MCP (Model Context Protocol) servers in your workflows.
 
 ## Features
 
@@ -15,14 +15,14 @@ This action installs the Toolhive CLI (`thv`) on GitHub Actions runners, enablin
 ### Basic Usage
 
 ```yaml
-- name: Install Toolhive
+- name: Install ToolHive
   uses: StacklokLabs/toolhive-actions/install@v0
 ```
 
 ### Install Specific Version
 
 ```yaml
-- name: Install Toolhive v0.2.5
+- name: Install ToolHive v0.2.5
   uses: StacklokLabs/toolhive-actions/install@v0
   with:
     version: v0.2.5
@@ -31,7 +31,7 @@ This action installs the Toolhive CLI (`thv`) on GitHub Actions runners, enablin
 ### Custom Installation Directory
 
 ```yaml
-- name: Install Toolhive to custom directory
+- name: Install ToolHive to custom directory
   uses: StacklokLabs/toolhive-actions/install@v0
   with:
     install-dir: /opt/toolhive
@@ -40,7 +40,7 @@ This action installs the Toolhive CLI (`thv`) on GitHub Actions runners, enablin
 ### Disable Checksum Verification
 
 ```yaml
-- name: Install Toolhive without checksum verification
+- name: Install ToolHive without checksum verification
   uses: StacklokLabs/toolhive-actions/install@v0
   with:
     verify-checksum: false
@@ -50,24 +50,24 @@ This action installs the Toolhive CLI (`thv`) on GitHub Actions runners, enablin
 
 | Input | Description | Required | Default |
 |-------|-------------|----------|---------|
-| `version` | Toolhive version to install (e.g., "v0.2.5" or "latest") | No | `latest` |
+| `version` | ToolHive version to install (e.g., "v0.2.5" or "latest") | No | `latest` |
 | `verify-checksum` | Verify the checksum of the downloaded binary | No | `true` |
 | `github-token` | GitHub token for API requests | No | `${{ github.token }}` |
-| `install-dir` | Directory to install Toolhive | No | `~/.toolhive/bin` |
+| `install-dir` | Directory to install ToolHive | No | `~/.toolhive/bin` |
 
 ## Outputs
 
 | Output | Description |
 |--------|-------------|
-| `version` | The installed Toolhive version |
-| `path` | The path to the installed Toolhive binary |
+| `version` | The installed ToolHive version |
+| `path` | The path to the installed ToolHive binary |
 
 ## Examples
 
 ### Complete Workflow Example
 
 ```yaml
-name: Use Toolhive
+name: Use ToolHive
 on:
   push:
     branches: [ main ]
@@ -80,7 +80,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - name: Install Toolhive
+      - name: Install ToolHive
         id: install-toolhive
         uses: StacklokLabs/toolhive-actions/install@v0
         with:
@@ -111,7 +111,7 @@ jobs:
     
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Install Toolhive
+      - name: Install ToolHive
         uses: StacklokLabs/toolhive-actions/install@v0
         with:
           version: ${{ matrix.version }}
@@ -125,14 +125,14 @@ jobs:
 The action automatically caches installations. Here's how it works:
 
 ```yaml
-- name: Install Toolhive (first run - downloads)
+- name: Install ToolHive (first run - downloads)
   uses: StacklokLabs/toolhive-actions/install@v0
   with:
     version: v0.2.5
 
 # In subsequent runs with the same version/OS/arch,
 # the cached version will be used automatically
-- name: Install Toolhive (subsequent runs - uses cache)
+- name: Install ToolHive (subsequent runs - uses cache)
   uses: StacklokLabs/toolhive-actions/install@v0
   with:
     version: v0.2.5
@@ -179,7 +179,7 @@ If checksum verification fails, you can:
 On Linux runners, if you encounter permission issues:
 
 ```yaml
-- name: Install Toolhive
+- name: Install ToolHive
   uses: StacklokLabs/toolhive-actions/install@v0
   
 - name: Fix permissions
@@ -191,7 +191,7 @@ On Linux runners, if you encounter permission issues:
 On Windows runners, if `thv` is not found after installation:
 
 ```yaml
-- name: Install Toolhive
+- name: Install ToolHive
   uses: StacklokLabs/toolhive-actions/install@v0
   
 - name: Verify installation
@@ -226,4 +226,4 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](../LIC
 
 - [GitHub Issues](https://github.com/StacklokLabs/toolhive-actions/issues)
 - [Discord Community](https://discord.gg/stacklok)
-- [Toolhive Documentation](https://docs.stacklok.com/toolhive)
+- [ToolHive Documentation](https://docs.stacklok.com/toolhive)

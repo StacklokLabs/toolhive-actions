@@ -63,7 +63,7 @@ jspm_packages/
 .env.local
 .env.*.local
 
-# Toolhive specific
+# ToolHive specific
 ~/.toolhive/
 .toolhive/
 
