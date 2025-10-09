@@ -141,6 +141,64 @@ jobs:
         if: always()
         run: thv stop --all || true
 
+  test-mcp-config-action:
+    name: Test MCP Config Action
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install ToolHive
+        uses: ./install
+
+      - name: Run Fetch Server
+        uses: ./run-mcp-server
+        with:
+          server: fetch
+          name: fetch-test
+
+      - name: Run GitHub Server
+        uses: ./run-mcp-server
+        with:
+          server: github
+          name: github-test
+        continue-on-error: true  # May fail without credentials
+
+      - name: Test MCP Config Action
+        id: config
+        uses: ./mcp-config
+        with:
+          output-file: test-mcp-servers.json
+          upload-artifact: 'true'
+          artifact-name: test-mcp-config
+
+      - name: Verify Configuration Output
+        run: |
+          echo "Config file: ${{ steps.config.outputs.config-file }}"
+          echo "Server count: ${{ steps.config.outputs.server-count }}"
+
+          # Verify the file exists
+          if [ ! -f "${{ steps.config.outputs.config-file }}" ]; then
+            echo "Error: Config file not found"
+            exit 1
+          fi
+
+          # Verify it's valid JSON
+          if ! jq empty "${{ steps.config.outputs.config-file }}"; then
+            echo "Error: Invalid JSON format"
+            exit 1
+          fi
+
+          # Display the configuration
+          echo "Configuration content:"
+          cat "${{ steps.config.outputs.config-file }}"
+
+          echo "✓ MCP config action test passed"
+
+      - name: Clean Up
+        if: always()
+        run: thv stop --all || true
+
   validate-action-metadata:
     name: Validate Action Metadata
     runs-on: ubuntu-latest
@@ -162,3 +220,9 @@ jobs:
           echo "Validating run-mcp-server/action.yml..."
           yq eval '.' run-mcp-server/action.yml > /dev/null
           echo "✓ run-mcp-server/action.yml is valid"
+
+      - name: Validate mcp-config/action.yml
+        run: |
+          echo "Validating mcp-config/action.yml..."
+          yq eval '.' mcp-config/action.yml > /dev/null
+          echo "✓ mcp-config/action.yml is valid"
