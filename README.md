@@ -67,6 +67,18 @@ Persists MCP server configurations to a file and optionally uploads as an artifa
 
 [📖 Full Documentation](./mcp-config/README.md)
 
+### 4. `skill-build` - Build ToolHive Skills
+
+Build and optionally push a ToolHive skill as an OCI artifact.
+
+**Features:**
+- 🏗️ Build skills from a local directory containing `SKILL.md`
+- 🏷️ Custom OCI tagging
+- 📤 Push to any OCI-compatible registry (ghcr.io, Docker Hub, etc.)
+- ✅ Validates skill structure before building
+
+[📖 Full Documentation](./skill-build/README.md)
+
 ## 📚 Examples
 
 ### Basic Installation and Usage

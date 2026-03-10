@@ -199,22 +199,87 @@ jobs:
         if: always()
         run: thv stop --all || true
 
+  test-skill-build-action:
+    name: Test Skill Build Action
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install ToolHive
+        uses: ./install
+
+      - name: Create Test Skill
+        run: |
+          mkdir -p test-skill
+          cat > test-skill/SKILL.md << 'SKILLEOF'
+---
+name: test-skill
+description: "A test skill for CI validation"
+version: "0.1.0"
+license: Apache-2.0
+---
+
+# Test Skill
+
+This is a test skill used to validate the skill-build action.
+SKILLEOF
+
+      - name: Test Build Action (default tag)
+        id: build
+        uses: ./skill-build
+        with:
+          path: ./test-skill
+
+      - name: Verify Build Output
+        env:
+          REFERENCE: ${{ steps.build.outputs.reference }}
+        run: |
+          echo "Built reference: $REFERENCE"
+
+          if [ -z "$REFERENCE" ]; then
+            echo "Error: No reference output from build"
+            exit 1
+          fi
+
+          echo "Skill build test passed"
+
+      - name: Test Build Action (custom tag)
+        id: build-tagged
+        uses: ./skill-build
+        with:
+          path: ./test-skill
+          tag: test-skill:ci
+
+      - name: Verify Tagged Build Output
+        env:
+          REFERENCE: ${{ steps.build-tagged.outputs.reference }}
+        run: |
+          echo "Built reference: $REFERENCE"
+
+          if [ -z "$REFERENCE" ]; then
+            echo "Error: No reference output from tagged build"
+            exit 1
+          fi
+
+          echo "Tagged skill build test passed"
+
   validate-action-metadata:
     name: Validate Action Metadata
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-      
+
       - name: Setup yq
         uses: mikefarah/yq@v4
-      
+
       - name: Validate install/action.yml
         run: |
           echo "Validating install/action.yml..."
           yq eval '.' install/action.yml > /dev/null
           echo "✓ install/action.yml is valid"
-      
+
       - name: Validate run-mcp-server/action.yml
         run: |
           echo "Validating run-mcp-server/action.yml..."
@@ -226,3 +291,9 @@ jobs:
           echo "Validating mcp-config/action.yml..."
           yq eval '.' mcp-config/action.yml > /dev/null
           echo "✓ mcp-config/action.yml is valid"
+
+      - name: Validate skill-build/action.yml
+        run: |
+          echo "Validating skill-build/action.yml..."
+          yq eval '.' skill-build/action.yml > /dev/null
+          echo "✓ skill-build/action.yml is valid"

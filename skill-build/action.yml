@@ -1,0 +1,143 @@
+name: 'Build ToolHive Skill'
+description: 'Build and optionally push a ToolHive skill as an OCI artifact'
+author: 'Stacklok'
+branding:
+  icon: 'package'
+  color: 'purple'
+
+inputs:
+  path:
+    description: 'Path to the skill directory containing SKILL.md'
+    required: true
+  tag:
+    description: 'OCI tag for the built artifact (e.g., ghcr.io/org/skill-name:v1.0.0). Defaults to the skill name from SKILL.md.'
+    required: false
+    default: ''
+  push:
+    description: 'Push the built artifact to a remote OCI registry. Requires prior registry login (e.g., via docker/login-action).'
+    required: false
+    default: 'false'
+
+outputs:
+  reference:
+    description: 'OCI reference of the built skill artifact'
+    value: ${{ steps.build.outputs.reference }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check Prerequisites
+      shell: bash
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+      run: |
+        if ! command -v thv &> /dev/null; then
+          echo "::error::ToolHive CLI (thv) is not installed. Please use the install action first."
+          exit 1
+        fi
+
+        if [ ! -d "$INPUT_PATH" ]; then
+          echo "::error::Skill directory not found: $INPUT_PATH"
+          exit 1
+        fi
+
+        if [ ! -f "$INPUT_PATH/SKILL.md" ]; then
+          echo "::error::SKILL.md not found in $INPUT_PATH"
+          exit 1
+        fi
+
+    - name: Start ToolHive Daemon
+      id: daemon
+      shell: bash
+      run: |
+        # Check if a daemon is already reachable (e.g., started by run-mcp-server)
+        EXISTING_URL="${TOOLHIVE_API_URL:-http://127.0.0.1:8080}"
+        if curl -sf "${EXISTING_URL}/api/v1beta/health" > /dev/null 2>&1; then
+          echo "ToolHive daemon already running at $EXISTING_URL"
+          PORT=$(echo "$EXISTING_URL" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|')
+          echo "port=$PORT" >> $GITHUB_OUTPUT
+          echo "started=false" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        # Find an available port
+        PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("",0)); print(s.getsockname()[1]); s.close()' 2>/dev/null) || {
+          echo "::warning::python3 not available for port selection, falling back to 8080"
+          PORT=8080
+        }
+
+        echo "Starting thv serve on port $PORT..."
+        thv serve --address "127.0.0.1:${PORT}" &
+        DAEMON_PID=$!
+        echo "pid=$DAEMON_PID" >> $GITHUB_OUTPUT
+        echo "port=$PORT" >> $GITHUB_OUTPUT
+        echo "started=true" >> $GITHUB_OUTPUT
+
+        # Wait for daemon to be ready
+        MAX_WAIT=30
+        ELAPSED=0
+        while [ $ELAPSED -lt $MAX_WAIT ]; do
+          if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+            echo "::error::ToolHive daemon process exited unexpectedly"
+            wait "$DAEMON_PID" 2>/dev/null
+            exit 1
+          fi
+          if curl -sf "http://127.0.0.1:${PORT}/api/v1beta/health" > /dev/null 2>&1; then
+            echo "ToolHive daemon is ready (port $PORT)"
+            break
+          fi
+          sleep 1
+          ELAPSED=$((ELAPSED + 1))
+        done
+
+        if [ $ELAPSED -ge $MAX_WAIT ]; then
+          echo "::error::ToolHive daemon failed to start within ${MAX_WAIT}s"
+          kill "$DAEMON_PID" 2>/dev/null || true
+          exit 1
+        fi
+
+    - name: Build Skill
+      id: build
+      shell: bash
+      env:
+        TOOLHIVE_API_URL: http://127.0.0.1:${{ steps.daemon.outputs.port }}
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_TAG: ${{ inputs.tag }}
+      run: |
+        BUILD_ARGS=("$INPUT_PATH")
+        if [ -n "$INPUT_TAG" ]; then
+          BUILD_ARGS+=(--tag "$INPUT_TAG")
+        fi
+
+        echo "Building skill from $INPUT_PATH..."
+        REFERENCE=$(thv skill build "${BUILD_ARGS[@]}" | tail -1)
+
+        if [ -z "$REFERENCE" ]; then
+          echo "::error::Skill build returned empty reference"
+          exit 1
+        fi
+
+        echo "reference=$REFERENCE" >> $GITHUB_OUTPUT
+        echo "Built skill: $REFERENCE"
+
+    - name: Push Skill
+      if: inputs.push == 'true'
+      shell: bash
+      env:
+        TOOLHIVE_API_URL: http://127.0.0.1:${{ steps.daemon.outputs.port }}
+        REFERENCE: ${{ steps.build.outputs.reference }}
+      run: |
+        echo "Pushing $REFERENCE..."
+        thv skill push "$REFERENCE"
+        echo "Pushed skill: $REFERENCE"
+
+    - name: Stop ToolHive Daemon
+      if: always() && steps.daemon.outputs.started == 'true'
+      shell: bash
+      env:
+        DAEMON_PID: ${{ steps.daemon.outputs.pid }}
+      run: |
+        if [ -n "$DAEMON_PID" ]; then
+          kill "$DAEMON_PID" 2>/dev/null || true
+          wait "$DAEMON_PID" 2>/dev/null || true
+        fi
