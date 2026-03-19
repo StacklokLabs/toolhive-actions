@@ -190,35 +190,31 @@ runs:
     - name: Run MCP Server
       id: run-server
       shell: bash
+      env:
+        RUN_CMD: ${{ steps.build-command.outputs.command }}
+        INPUT_NAME: ${{ inputs.name }}
+        INPUT_SERVER: ${{ inputs.server }}
       run: |
         # Run the server (thv run spawns in background and returns)
         echo "Starting MCP server..."
-        RUN_CMD="${{ steps.build-command.outputs.command }}"
-        SERVER_NAME="${{ inputs.name }}"
-        
-        if [ -z "$SERVER_NAME" ]; then
-          SERVER_NAME="${{ inputs.server }}"
-        fi
-        
+        SERVER_NAME="${INPUT_NAME:-$INPUT_SERVER}"
+
         # Execute thv run command (it spawns the server in background)
         echo "Executing: $RUN_CMD"
         eval "$RUN_CMD"
-        
+
         # Give the server time to start
         echo "Waiting for server to be ready..."
         sleep 5
-        
-        # Check if server is running using thv list
+
+        # Check if server is running using thv list --format json
         MAX_CHECKS=3
         CHECK_COUNT=0
         SERVER_RUNNING=false
-        
+
         while [ $CHECK_COUNT -lt $MAX_CHECKS ]; do
-          if thv list | grep -q "$SERVER_NAME"; then
+          if thv list --format json | jq -e --arg name "$SERVER_NAME" '.[] | select(.name == $name)' > /dev/null 2>&1; then
             echo "✓ Server is running"
-            SERVER_INFO=$(thv list | grep "$SERVER_NAME" | head -1)
-            SERVER_PID=$(echo "$SERVER_INFO" | awk '{print $2}')
-            echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
             SERVER_RUNNING=true
             break
           else
@@ -229,32 +225,31 @@ runs:
             fi
           fi
         done
-        
+
         if [ "$SERVER_RUNNING" = false ]; then
           echo "::error::Server failed to start or is not visible in thv list"
           echo "Attempting to get logs..."
           thv logs "$SERVER_NAME" 2>/dev/null || echo "Could not retrieve logs"
           exit 1
         fi
-        
-        # Get server information
-        SERVER_INFO=$(thv list | grep -E "${{ inputs.server }}|${{ inputs.name }}" | head -1)
-        
-        if [ -z "$SERVER_INFO" ]; then
+
+        # Get server information from JSON
+        SERVER_JSON=$(thv list --format json | jq --arg name "$SERVER_NAME" '.[] | select(.name == $name)')
+
+        if [ -z "$SERVER_JSON" ]; then
           echo "::warning::Could not retrieve server information"
           echo "status=running" >> $GITHUB_OUTPUT
         else
-          # Parse server information
-          PORT=$(echo "$SERVER_INFO" | awk '{print $5}')
-          URL=$(echo "$SERVER_INFO" | awk '{print $4}')
-          STATUS=$(echo "$SERVER_INFO" | awk '{print $3}')
-          CONTAINER_NAME=$(echo "$SERVER_INFO" | awk '{print $1}')
-          
+          PORT=$(echo "$SERVER_JSON" | jq -r '.port')
+          URL=$(echo "$SERVER_JSON" | jq -r '.url')
+          STATUS=$(echo "$SERVER_JSON" | jq -r '.status')
+          CONTAINER_NAME=$(echo "$SERVER_JSON" | jq -r '.name')
+
           echo "port=$PORT" >> $GITHUB_OUTPUT
           echo "url=$URL" >> $GITHUB_OUTPUT
           echo "status=$STATUS" >> $GITHUB_OUTPUT
           echo "container-name=$CONTAINER_NAME" >> $GITHUB_OUTPUT
-          
+
           echo "Server is running:"
           echo "  URL: $URL"
           echo "  Port: $PORT"
@@ -265,36 +260,40 @@ runs:
     - name: Wait for Server Ready
       if: inputs.wait-for-ready == 'true'
       shell: bash
+      env:
+        INPUT_NAME: ${{ inputs.name }}
+        INPUT_SERVER: ${{ inputs.server }}
+        INPUT_TIMEOUT: ${{ inputs.timeout }}
+        SERVER_URL: ${{ steps.run-server.outputs.url }}
       run: |
         echo "Waiting for server to be ready..."
-        
-        TIMEOUT=${{ inputs.timeout }}
+        SERVER_NAME="${INPUT_NAME:-$INPUT_SERVER}"
+
+        TIMEOUT=$INPUT_TIMEOUT
         ELAPSED=0
-        
+
         while [ $ELAPSED -lt $TIMEOUT ]; do
-          # Check if server is in running state
-          STATUS=$(thv list | grep -E "${{ inputs.server }}|${{ inputs.name }}" | awk '{print $3}')
-          
+          # Check if server is in running state using JSON output
+          STATUS=$(thv list --format json | jq -r --arg name "$SERVER_NAME" '.[] | select(.name == $name) | .status')
+
           if [ "$STATUS" = "running" ]; then
             echo "✓ Server is ready"
-            
+
             # Additional health check if URL is available
-            if [ -n "${{ steps.run-server.outputs.url }}" ]; then
-              URL="${{ steps.run-server.outputs.url }}"
-              # Try to connect to the server
-              if curl -s -o /dev/null -w "%{http_code}" "$URL" | grep -q "200\|404"; then
+            if [ -n "$SERVER_URL" ]; then
+              if curl -s -o /dev/null -w "%{http_code}" "$SERVER_URL" | grep -q "200\|404"; then
                 echo "✓ Server is responding"
               fi
             fi
-            
+
             exit 0
           fi
-          
+
           echo "Waiting... ($ELAPSED/$TIMEOUT seconds)"
           sleep 2
           ELAPSED=$((ELAPSED + 2))
         done
-        
+
         echo "::error::Server did not become ready within $TIMEOUT seconds"
         exit 1
 
