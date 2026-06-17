@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+  # Run daily so breakage from upstream ToolHive "latest" releases (e.g. renamed
+  # CLI flags or moved API routes) is caught proactively rather than at next push.
+  schedule:
+    - cron: '0 6 * * *'
 
 jobs:
   test-install-action:
