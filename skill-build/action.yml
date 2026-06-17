@@ -50,9 +50,12 @@ runs:
       id: daemon
       shell: bash
       run: |
-        # Check if a daemon is already reachable (e.g., started by run-mcp-server)
+        # Check if a daemon is already reachable (e.g., started by run-mcp-server).
+        # Any HTTP response (even 503 when no container runtime is present) means the
+        # API server is up. Skill build/push package OCI artifacts and do not require
+        # a container runtime, so we must not gate readiness on the runtime's health.
         EXISTING_URL="${TOOLHIVE_API_URL:-http://127.0.0.1:8080}"
-        if curl -sf "${EXISTING_URL}/api/v1beta/health" > /dev/null 2>&1; then
+        if [ "$(curl -s -o /dev/null -w '%{http_code}' "${EXISTING_URL}/health" 2>/dev/null)" != "000" ]; then
           echo "ToolHive daemon already running at $EXISTING_URL"
           PORT=$(echo "$EXISTING_URL" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|')
           echo "port=$PORT" >> $GITHUB_OUTPUT
@@ -67,7 +70,7 @@ runs:
         }
 
         echo "Starting thv serve on port $PORT..."
-        thv serve --address "127.0.0.1:${PORT}" &
+        thv serve --host "127.0.0.1" --port "${PORT}" &
         DAEMON_PID=$!
         echo "pid=$DAEMON_PID" >> $GITHUB_OUTPUT
         echo "port=$PORT" >> $GITHUB_OUTPUT
@@ -82,7 +85,7 @@ runs:
             wait "$DAEMON_PID" 2>/dev/null
             exit 1
           fi
-          if curl -sf "http://127.0.0.1:${PORT}/api/v1beta/health" > /dev/null 2>&1; then
+          if [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/health" 2>/dev/null)" != "000" ]; then
             echo "ToolHive daemon is ready (port $PORT)"
             break
           fi
