@@ -217,17 +217,17 @@ jobs:
         run: |
           mkdir -p test-skill
           cat > test-skill/SKILL.md << 'SKILLEOF'
----
-name: test-skill
-description: "A test skill for CI validation"
-version: "0.1.0"
-license: Apache-2.0
----
+          ---
+          name: test-skill
+          description: "A test skill for CI validation"
+          version: "0.1.0"
+          license: Apache-2.0
+          ---
 
-# Test Skill
+          # Test Skill
 
-This is a test skill used to validate the skill-build action.
-SKILLEOF
+          This is a test skill used to validate the skill-build action.
+          SKILLEOF
 
       - name: Test Build Action (default tag)
         id: build
@@ -238,6 +238,7 @@ SKILLEOF
       - name: Verify Build Output
         env:
           REFERENCE: ${{ steps.build.outputs.reference }}
+          REFERENCES: ${{ steps.build.outputs.references }}
         run: |
           echo "Built reference: $REFERENCE"
 
@@ -246,27 +247,150 @@ SKILLEOF
             exit 1
           fi
 
+          if [ "$REFERENCES" != "$REFERENCE" ]; then
+            echo "Error: Default build references output does not match reference"
+            exit 1
+          fi
+
           echo "Skill build test passed"
+
+      - name: Test Build Action (whitespace-only tags fallback)
+        id: build-whitespace-tags
+        uses: ./skill-build
+        with:
+          path: ./test-skill
+          tags: '   '
+
+      - name: Verify whitespace-only tags fall back to default build
+        env:
+          DEFAULT_REFERENCE: ${{ steps.build.outputs.reference }}
+          REFERENCE: ${{ steps.build-whitespace-tags.outputs.reference }}
+          REFERENCES: ${{ steps.build-whitespace-tags.outputs.references }}
+        run: |
+          if [ "$REFERENCE" != "$DEFAULT_REFERENCE" ]; then
+            echo "Error: Whitespace-only tags did not fall back to the default reference"
+            exit 1
+          fi
+
+          if [ "$REFERENCES" != "$REFERENCE" ]; then
+            echo "Error: Whitespace-only tags references output does not match reference"
+            exit 1
+          fi
 
       - name: Test Build Action (custom tag)
         id: build-tagged
         uses: ./skill-build
         with:
           path: ./test-skill
-          tag: test-skill:ci
+          tag: ghcr.io/stacklok/test-skill:ci
 
       - name: Verify Tagged Build Output
         env:
           REFERENCE: ${{ steps.build-tagged.outputs.reference }}
+          REFERENCES: ${{ steps.build-tagged.outputs.references }}
         run: |
           echo "Built reference: $REFERENCE"
 
-          if [ -z "$REFERENCE" ]; then
-            echo "Error: No reference output from tagged build"
+          if [ "$REFERENCE" != "ghcr.io/stacklok/test-skill:ci" ]; then
+            echo "Error: Legacy tagged build reference is not ghcr.io/stacklok/test-skill:ci"
+            exit 1
+          fi
+
+          if [ "$REFERENCES" != "ghcr.io/stacklok/test-skill:ci" ]; then
+            echo "Error: Legacy tagged build references output is not ghcr.io/stacklok/test-skill:ci"
             exit 1
           fi
 
           echo "Tagged skill build test passed"
+
+      - name: Test Build Action (multiple tags)
+        id: build-multiple
+        uses: ./skill-build
+        with:
+          path: ./test-skill
+          tags: |
+            ghcr.io/stacklok/test-skill:ci-one
+
+              ghcr.io/stacklok/test-skill:ci-two
+
+      - name: Verify Multiple Build Outputs
+        env:
+          REFERENCE: ${{ steps.build-multiple.outputs.reference }}
+          REFERENCES: ${{ steps.build-multiple.outputs.references }}
+          EXPECTED_REFERENCES: |-
+            ghcr.io/stacklok/test-skill:ci-one
+            ghcr.io/stacklok/test-skill:ci-two
+        run: |
+          echo "Built references:"
+          printf '%s\n' "$REFERENCES"
+
+          if [ "$REFERENCE" != "ghcr.io/stacklok/test-skill:ci-one" ]; then
+            echo "Error: reference is not the first built reference"
+            exit 1
+          fi
+
+          if [ "$REFERENCES" != "$EXPECTED_REFERENCES" ]; then
+            echo "Error: references output did not preserve trimmed input order"
+            exit 1
+          fi
+
+          echo "Multiple skill build test passed"
+
+      - name: Verify Multiple Builds Are Listed Locally
+        env:
+          EXPECTED_FIRST_REFERENCE: ghcr.io/stacklok/test-skill:ci-one
+          EXPECTED_SECOND_REFERENCE: ghcr.io/stacklok/test-skill:ci-two
+        run: |
+          BUILDS=$(thv skill builds --format json)
+          printf '%s\n' "$BUILDS"
+
+          # The builds listing is the source of truth for locally built artifacts;
+          # match complete JSON string values without depending on its schema.
+          for REFERENCE in "$EXPECTED_FIRST_REFERENCE" "$EXPECTED_SECOND_REFERENCE"; do
+            if ! printf '%s' "$BUILDS" | grep -Fq '"'$REFERENCE'"'; then
+              echo "Error: locally built artifact not found: $REFERENCE"
+              exit 1
+            fi
+          done
+
+          echo "Local multi-tag builds are present"
+
+      - name: Reject tag and tags together
+        id: conflicting-tags
+        continue-on-error: true
+        uses: ./skill-build
+        with:
+          path: ./test-skill
+          tag: ghcr.io/stacklok/test-skill:legacy
+          tags: ghcr.io/stacklok/test-skill:new
+
+      - name: Verify conflicting inputs are rejected
+        env:
+          OUTCOME: ${{ steps.conflicting-tags.outcome }}
+        run: |
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "Error: tag and tags were not rejected"
+            exit 1
+          fi
+
+      - name: Reject duplicate tags
+        id: duplicate-tags
+        continue-on-error: true
+        uses: ./skill-build
+        with:
+          path: ./test-skill
+          tags: |
+            ghcr.io/stacklok/test-skill:duplicate
+              ghcr.io/stacklok/test-skill:duplicate
+
+      - name: Verify duplicate tags are rejected
+        env:
+          OUTCOME: ${{ steps.duplicate-tags.outcome }}
+        run: |
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "Error: duplicate tags were not rejected"
+            exit 1
+          fi
 
   validate-action-metadata:
     name: Validate Action Metadata

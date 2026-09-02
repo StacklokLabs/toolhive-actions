@@ -73,9 +73,25 @@ Build and optionally push a ToolHive skill as an OCI artifact.
 
 **Features:**
 - 🏗️ Build skills from a local directory containing `SKILL.md`
-- 🏷️ Custom OCI tagging
-- 📤 Push to any OCI-compatible registry (ghcr.io, Docker Hub, etc.)
-- ✅ Validates skill structure before building
+- 🏷️ Build multiple complete OCI references in input order
+- 📤 Push every built artifact to any OCI-compatible registry (ghcr.io, Docker Hub, etc.)
+- ✅ Validates skill structure and rejects conflicting or duplicate references
+
+Use the newline-delimited `tags` input for one or more references:
+
+```yaml
+- name: Build versioned skill artifacts
+  id: skill
+  uses: StacklokLabs/toolhive-actions/skill-build@v0
+  with:
+    path: ./my-skill
+    tags: |
+      ghcr.io/example/my-skill:v1.2.3
+      ghcr.io/example/my-skill:latest
+    push: 'true'
+```
+
+Each explicit reference is built separately because ToolHive accepts one `--tag` per build; artifact digests may differ. Blank lines are ignored, whitespace is trimmed, order is preserved, and duplicates are rejected. The `reference` output is the first built reference and `references` contains all references, newline-delimited. The legacy single-reference `tag` input is deprecated and warns when used; it cannot be combined with `tags`. With neither input, ToolHive's default reference is preserved. See the full documentation for migration details and output usage.
 
 [📖 Full Documentation](./skill-build/README.md)
 

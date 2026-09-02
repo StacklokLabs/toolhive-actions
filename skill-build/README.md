@@ -5,9 +5,9 @@ Build and optionally push a [ToolHive](https://github.com/stacklok/toolhive) ski
 ## Features
 
 - Build a skill from a local directory containing a `SKILL.md`
-- Tag the resulting OCI artifact with a custom reference
-- Optionally push to any OCI-compatible registry (ghcr.io, Docker Hub, etc.)
-- Validates skill structure before building
+- Build one artifact for each requested OCI reference
+- Optionally push every built artifact to any OCI-compatible registry (ghcr.io, Docker Hub, etc.)
+- Validates skill structure and tag input before building
 
 ## Prerequisites
 
@@ -19,14 +19,32 @@ Build and optionally push a [ToolHive](https://github.com/stacklok/toolhive) ski
 | Input | Description | Required | Default |
 |-------|-------------|----------|---------|
 | `path` | Path to the skill directory containing `SKILL.md` | Yes | - |
-| `tag` | OCI tag for the built artifact (e.g., `ghcr.io/org/skill-name:v1.0.0`) | No | Skill name from `SKILL.md` |
-| `push` | Push the artifact to a remote OCI registry | No | `false` |
+| `tags` | Newline-delimited complete OCI references | No | ToolHive default (when `tag` is also omitted) |
+| `tag` | **Deprecated.** One complete OCI reference; use `tags` instead | No | - |
+| `push` | Push every built artifact to a remote OCI registry | No | `false` |
+
+`tags` entries are trimmed, blank lines are ignored, and order is preserved. Duplicate references are rejected. `tag` and `tags` cannot be supplied together. When neither contains a reference, ToolHive's existing default-reference behavior is used. Because `thv skill build --tag` accepts one reference, the action performs a separate build for each explicit reference; different builds are not guaranteed to have the same digest.
+
+The deprecated `tag` input remains compatible with existing workflows and emits a GitHub Actions warning when used. Migrate a single tag like this:
+
+```yaml
+# Before
+with:
+  path: ./my-skill
+  tag: ghcr.io/example/my-skill:v1
+
+# After
+with:
+  path: ./my-skill
+  tags: ghcr.io/example/my-skill:v1
+```
 
 ## Outputs
 
 | Output | Description |
 |--------|-------------|
-| `reference` | OCI reference of the built skill artifact |
+| `reference` | First OCI reference built by the action |
+| `references` | Newline-delimited OCI references built by the action, in input order |
 
 ## Usage
 
@@ -64,11 +82,13 @@ steps:
     uses: stacklok/toolhive-actions/skill-build@v0
     with:
       path: ./my-skill
-      tag: ghcr.io/${{ github.repository_owner }}/my-skill:latest
+      tags: ghcr.io/${{ github.repository_owner }}/my-skill:latest
       push: 'true'
 ```
 
-### Build and Push with Semantic Versioning
+### Build and Push Multiple References
+
+Each nonblank `tags` line must be a complete OCI reference. There is no implicit repository or registry shared between lines.
 
 ```yaml
 steps:
@@ -82,12 +102,20 @@ steps:
       username: ${{ github.actor }}
       password: ${{ secrets.GITHUB_TOKEN }}
 
-  - name: Build and push skill
+  - name: Build and push versioned skill
+    id: build
     uses: stacklok/toolhive-actions/skill-build@v0
     with:
       path: ./skills/my-skill
-      tag: ghcr.io/${{ github.repository_owner }}/my-skill:${{ github.ref_name }}
+      tags: |
+        ghcr.io/${{ github.repository_owner }}/my-skill:${{ github.ref_name }}
+        ghcr.io/${{ github.repository_owner }}/my-skill:latest
       push: 'true'
+
+  - name: Show built references
+    env:
+      REFERENCES: ${{ steps.build.outputs.references }}
+    run: printf '%s\n' "$REFERENCES"
 ```
 
 ## Skill Directory Structure

@@ -10,27 +10,61 @@ inputs:
     description: 'Path to the skill directory containing SKILL.md'
     required: true
   tag:
-    description: 'OCI tag for the built artifact (e.g., ghcr.io/org/skill-name:v1.0.0). Defaults to the skill name from SKILL.md.'
+    description: 'Deprecated: single complete OCI reference for the built artifact. Use tags instead.'
+    required: false
+    default: ''
+  tags:
+    description: 'Newline-delimited complete OCI references. Blank lines are ignored and surrounding whitespace is trimmed.'
     required: false
     default: ''
   push:
-    description: 'Push the built artifact to a remote OCI registry. Requires prior registry login (e.g., via docker/login-action).'
+    description: 'Push every built artifact to a remote OCI registry. Requires prior registry login (e.g., via docker/login-action).'
     required: false
     default: 'false'
 
 outputs:
   reference:
-    description: 'OCI reference of the built skill artifact'
+    description: 'First OCI reference built by the action'
     value: ${{ steps.build.outputs.reference }}
+  references:
+    description: 'Newline-delimited OCI references built by the action, in input order'
+    value: ${{ steps.build.outputs.references }}
 
 runs:
   using: 'composite'
   steps:
-    - name: Check Prerequisites
+    - name: Check Inputs and Prerequisites
       shell: bash
       env:
         INPUT_PATH: ${{ inputs.path }}
+        INPUT_TAG: ${{ inputs.tag }}
+        INPUT_TAGS: ${{ inputs.tags }}
       run: |
+        if [ -n "$INPUT_TAG" ] && [ -n "$INPUT_TAGS" ]; then
+          echo "::error::The 'tag' and 'tags' inputs cannot be used together."
+          exit 1
+        fi
+
+        if [ -n "$INPUT_TAG" ]; then
+          echo "::warning::The 'tag' input is deprecated; use the 'tags' input instead."
+        fi
+
+        shopt -s extglob
+        TAG_REFERENCES=()
+        while IFS= read -r LINE || [ -n "$LINE" ]; do
+          REFERENCE="${LINE##+([[:space:]])}"
+          REFERENCE="${REFERENCE%%+([[:space:]])}"
+          [ -z "$REFERENCE" ] && continue
+
+          for EXISTING_REFERENCE in "${TAG_REFERENCES[@]}"; do
+            if [ "$REFERENCE" = "$EXISTING_REFERENCE" ]; then
+              echo "::error::The 'tags' input contains a duplicate OCI reference."
+              exit 1
+            fi
+          done
+          TAG_REFERENCES+=("$REFERENCE")
+        done <<< "$INPUT_TAGS"
+
         if ! command -v thv &> /dev/null; then
           echo "::error::ToolHive CLI (thv) is not installed. Please use the install action first."
           exit 1
@@ -58,8 +92,8 @@ runs:
         if [ "$(curl -s -o /dev/null -w '%{http_code}' "${EXISTING_URL}/health" 2>/dev/null)" != "000" ]; then
           echo "ToolHive daemon already running at $EXISTING_URL"
           PORT=$(echo "$EXISTING_URL" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|')
-          echo "port=$PORT" >> $GITHUB_OUTPUT
-          echo "started=false" >> $GITHUB_OUTPUT
+          echo "port=$PORT" >> "$GITHUB_OUTPUT"
+          echo "started=false" >> "$GITHUB_OUTPUT"
           exit 0
         fi
 
@@ -72,9 +106,9 @@ runs:
         echo "Starting thv serve on port $PORT..."
         thv serve --host "127.0.0.1" --port "${PORT}" &
         DAEMON_PID=$!
-        echo "pid=$DAEMON_PID" >> $GITHUB_OUTPUT
-        echo "port=$PORT" >> $GITHUB_OUTPUT
-        echo "started=true" >> $GITHUB_OUTPUT
+        echo "pid=$DAEMON_PID" >> "$GITHUB_OUTPUT"
+        echo "port=$PORT" >> "$GITHUB_OUTPUT"
+        echo "started=true" >> "$GITHUB_OUTPUT"
 
         # Wait for daemon to be ready
         MAX_WAIT=30
@@ -106,33 +140,68 @@ runs:
         TOOLHIVE_API_URL: http://127.0.0.1:${{ steps.daemon.outputs.port }}
         INPUT_PATH: ${{ inputs.path }}
         INPUT_TAG: ${{ inputs.tag }}
+        INPUT_TAGS: ${{ inputs.tags }}
       run: |
-        BUILD_ARGS=("$INPUT_PATH")
+        set -o pipefail
+        shopt -s extglob
+        TAG_REFERENCES=()
+        while IFS= read -r LINE || [ -n "$LINE" ]; do
+          TAG_REFERENCE="${LINE##+([[:space:]])}"
+          TAG_REFERENCE="${TAG_REFERENCE%%+([[:space:]])}"
+          [ -n "$TAG_REFERENCE" ] && TAG_REFERENCES+=("$TAG_REFERENCE")
+        done <<< "$INPUT_TAGS"
+
         if [ -n "$INPUT_TAG" ]; then
-          BUILD_ARGS+=(--tag "$INPUT_TAG")
+          TAG_REFERENCES=("$INPUT_TAG")
         fi
 
-        echo "Building skill from $INPUT_PATH..."
-        REFERENCE=$(thv skill build "${BUILD_ARGS[@]}" | tail -1)
-
-        if [ -z "$REFERENCE" ]; then
-          echo "::error::Skill build returned empty reference"
-          exit 1
+        BUILT_REFERENCES=()
+        if [ ${#TAG_REFERENCES[@]} -eq 0 ]; then
+          echo "Building skill from $INPUT_PATH..."
+          REFERENCE=$(thv skill build "$INPUT_PATH" | tail -1)
+          if [ -z "$REFERENCE" ]; then
+            echo "::error::Skill build returned an empty reference."
+            exit 1
+          fi
+          BUILT_REFERENCES+=("$REFERENCE")
+          echo "Built skill: $REFERENCE"
+        else
+          for TAG_REFERENCE in "${TAG_REFERENCES[@]}"; do
+            echo "Building skill from $INPUT_PATH..."
+            REFERENCE=$(thv skill build "$INPUT_PATH" --tag "$TAG_REFERENCE" | tail -1)
+            if [ -z "$REFERENCE" ]; then
+              echo "::error::Skill build returned an empty reference."
+              exit 1
+            fi
+            BUILT_REFERENCES+=("$REFERENCE")
+            echo "Built skill: $REFERENCE"
+          done
         fi
 
-        echo "reference=$REFERENCE" >> $GITHUB_OUTPUT
-        echo "Built skill: $REFERENCE"
+        echo "reference=${BUILT_REFERENCES[0]}" >> "$GITHUB_OUTPUT"
+        DELIMITER="ghadelimiter_${RANDOM}_${RANDOM}_$$"
+        while printf '%s\n' "${BUILT_REFERENCES[@]}" | grep -Fqx -- "$DELIMITER"; do
+          DELIMITER="${DELIMITER}_"
+        done
+        {
+          echo "references<<$DELIMITER"
+          printf '%s\n' "${BUILT_REFERENCES[@]}"
+          echo "$DELIMITER"
+        } >> "$GITHUB_OUTPUT"
 
-    - name: Push Skill
+    - name: Push Skills
       if: inputs.push == 'true'
       shell: bash
       env:
         TOOLHIVE_API_URL: http://127.0.0.1:${{ steps.daemon.outputs.port }}
-        REFERENCE: ${{ steps.build.outputs.reference }}
+        REFERENCES: ${{ steps.build.outputs.references }}
       run: |
-        echo "Pushing $REFERENCE..."
-        thv skill push "$REFERENCE"
-        echo "Pushed skill: $REFERENCE"
+        while IFS= read -r REFERENCE || [ -n "$REFERENCE" ]; do
+          [ -z "$REFERENCE" ] && continue
+          echo "Pushing $REFERENCE..."
+          thv skill push "$REFERENCE"
+          echo "Pushed skill: $REFERENCE"
+        done <<< "$REFERENCES"
 
     - name: Stop ToolHive Daemon
       if: always() && steps.daemon.outputs.started == 'true'
