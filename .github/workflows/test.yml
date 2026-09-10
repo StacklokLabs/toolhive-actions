@@ -336,6 +336,33 @@ jobs:
 
           echo "Multiple skill build test passed"
 
+      - name: Start ToolHive Daemon for Build Listing Checks
+        id: skill-daemon
+        run: |
+          PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+          DAEMON_URL="http://127.0.0.1:${PORT}"
+          thv serve --host 127.0.0.1 --port "$PORT" &
+          DAEMON_PID=$!
+          echo "pid=$DAEMON_PID" >> "$GITHUB_OUTPUT"
+          echo "TOOLHIVE_API_URL=$DAEMON_URL" >> "$GITHUB_ENV"
+
+          for _ in $(seq 1 30); do
+            if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+              echo "Error: ToolHive daemon exited unexpectedly"
+              wait "$DAEMON_PID" 2>/dev/null
+              exit 1
+            fi
+            HTTP_CODE=$(curl --silent --show-error --connect-timeout 1 --max-time 2 \
+              -o /dev/null -w '%{http_code}' "${DAEMON_URL}/health" 2>/dev/null || true)
+            if [ "$HTTP_CODE" = "204" ]; then
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "Error: ToolHive daemon failed to become healthy"
+          exit 1
+
       - name: Verify Multiple Builds Are Listed Locally
         env:
           EXPECTED_FIRST_REFERENCE: ghcr.io/stacklok/test-skill:ci-one
@@ -354,6 +381,16 @@ jobs:
           done
 
           echo "Local multi-tag builds are present"
+
+      - name: Stop Test ToolHive Daemon
+        if: always()
+        env:
+          DAEMON_PID: ${{ steps.skill-daemon.outputs.pid }}
+        run: |
+          if [ -n "$DAEMON_PID" ]; then
+            kill "$DAEMON_PID" 2>/dev/null || true
+            wait "$DAEMON_PID" 2>/dev/null || true
+          fi
 
       - name: Reject tag and tags together
         id: conflicting-tags
