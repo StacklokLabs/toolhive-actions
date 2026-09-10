@@ -1,0 +1,8 @@
+{
+  "name": "different-plugin-name",
+  "description": "Invalid fixture whose manifest name does not match its directory",
+  "version": "0.1.0",
+  "author": {
+    "name": "Stacklok"
+  }
+}
