@@ -392,6 +392,211 @@ jobs:
             exit 1
           fi
 
+  test-ai-plugin-build-action:
+    name: Test AI Plugin Build Action
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install latest ToolHive
+        uses: ./install
+        with:
+          version: latest
+
+      - name: Create Test AI Plugin
+        run: |
+          mkdir -p test-plugin/.claude-plugin
+          cat > test-plugin/.claude-plugin/plugin.json << 'PLUGINJSON'
+          {
+            "name": "test-plugin",
+            "description": "A test AI-tool plugin for CI validation",
+            "version": "0.1.0",
+            "author": {
+              "name": "Stacklok"
+            }
+          }
+          PLUGINJSON
+
+      - name: Verify no ToolHive daemon is prestarted
+        run: |
+          HTTP_CODE=$(curl --silent --connect-timeout 1 --max-time 2 \
+            -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health 2>/dev/null || true)
+          if [ "$HTTP_CODE" != "000" ] || pgrep -f '[t]hv serve' >/dev/null; then
+            echo "Error: A ToolHive daemon was running before the lifecycle test"
+            exit 1
+          fi
+
+      - name: Test Build Action (default reference and owned daemon lifecycle)
+        id: plugin-build
+        uses: ./ai-plugin-build
+        with:
+          path: ./test-plugin
+
+      - name: Verify Default Build Output
+        env:
+          REFERENCE: ${{ steps.plugin-build.outputs.reference }}
+          REFERENCES: ${{ steps.plugin-build.outputs.references }}
+        run: |
+          if [ -z "$REFERENCE" ]; then
+            echo "Error: No reference output from default plugin build"
+            exit 1
+          fi
+          if [[ "$REFERENCE" == *$'\n'* || "$REFERENCE" == *$'\r'* ]]; then
+            echo "Error: Default plugin reference output contains a line break"
+            exit 1
+          fi
+          if [ "$REFERENCES" != "$REFERENCE" ]; then
+            echo "Error: Default plugin references output does not match reference"
+            exit 1
+          fi
+          if pgrep -f '[t]hv serve' >/dev/null; then
+            echo "Error: Default plugin build did not clean up its action-owned daemon"
+            exit 1
+          fi
+
+      - name: Reject invalid push value during prerequisites
+        id: invalid-plugin-push
+        continue-on-error: true
+        uses: ./ai-plugin-build
+        with:
+          path: ./test-plugin
+          push: 'TRUE'
+
+      - name: Verify invalid push value is rejected
+        env:
+          OUTCOME: ${{ steps.invalid-plugin-push.outcome }}
+        run: |
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "Error: Invalid plugin push value was not rejected"
+            exit 1
+          fi
+
+      - name: Start ToolHive Daemon for Build Listing Checks
+        id: plugin-daemon
+        run: |
+          PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+          DAEMON_URL="http://127.0.0.1:${PORT}"
+          thv serve --host 127.0.0.1 --port "$PORT" &
+          DAEMON_PID=$!
+          echo "pid=$DAEMON_PID" >> "$GITHUB_OUTPUT"
+          echo "TOOLHIVE_API_URL=$DAEMON_URL" >> "$GITHUB_ENV"
+
+          for _ in $(seq 1 30); do
+            if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+              echo "Error: ToolHive daemon exited unexpectedly"
+              wait "$DAEMON_PID" 2>/dev/null
+              exit 1
+            fi
+            HTTP_CODE=$(curl --silent --show-error --connect-timeout 1 --max-time 2 \
+              -o /dev/null -w '%{http_code}' "${DAEMON_URL}/health" 2>/dev/null || true)
+            if [ "$HTTP_CODE" = "204" ]; then
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "Error: ToolHive daemon failed to become healthy"
+          exit 1
+
+      - name: Verify Default Build Is Listed by Controlled Daemon
+        env:
+          REFERENCE: ${{ steps.plugin-build.outputs.reference }}
+        run: |
+          BUILDS=$(thv ai-plugin builds --format json)
+          printf '%s\n' "$BUILDS"
+          if ! printf '%s' "$BUILDS" | grep -Fq '"'$REFERENCE'"'; then
+            echo "Error: default plugin build not found locally: $REFERENCE"
+            exit 1
+          fi
+
+      - name: Test Build Action (multiple tags with blank and whitespace-only lines)
+        id: plugin-build-multiple
+        uses: ./ai-plugin-build
+        with:
+          path: ./test-plugin
+          tags: "   \n\n  ghcr.io/stacklok/test-plugin:ci-one  \n\t \t\n\tghcr.io/stacklok/test-plugin:ci-two\t\n  "
+
+      - name: Verify Multiple Build Outputs and Listing
+        env:
+          REFERENCE: ${{ steps.plugin-build-multiple.outputs.reference }}
+          REFERENCES: ${{ steps.plugin-build-multiple.outputs.references }}
+          EXPECTED_REFERENCE: ghcr.io/stacklok/test-plugin:ci-one
+          EXPECTED_REFERENCES: |-
+            ghcr.io/stacklok/test-plugin:ci-one
+            ghcr.io/stacklok/test-plugin:ci-two
+        run: |
+          if [[ "$REFERENCE" == *$'\n'* || "$REFERENCE" == *$'\r'* ]]; then
+            echo "Error: plugin reference output contains a line break"
+            exit 1
+          fi
+          if [ "$REFERENCE" != "$EXPECTED_REFERENCE" ]; then
+            echo "Error: plugin reference does not exactly match the first trimmed input reference"
+            exit 1
+          fi
+          if [ "$REFERENCES" != "$EXPECTED_REFERENCES" ]; then
+            echo "Error: plugin references did not preserve trimmed input order"
+            exit 1
+          fi
+
+          BUILDS=$(thv ai-plugin builds --format json)
+          printf '%s\n' "$BUILDS"
+          while IFS= read -r BUILT_REFERENCE; do
+            if ! printf '%s' "$BUILDS" | grep -Fq '"'$BUILT_REFERENCE'"'; then
+              echo "Error: plugin build not found locally: $BUILT_REFERENCE"
+              exit 1
+            fi
+          done <<< "$EXPECTED_REFERENCES"
+
+      - name: Reject invalid plugin manifest before build
+        id: invalid-plugin-manifest
+        continue-on-error: true
+        uses: ./ai-plugin-build
+        with:
+          path: ./ai-plugin-build/testdata/invalid-name
+          tags: ghcr.io/stacklok/invalid-plugin:must-not-build
+
+      - name: Verify invalid plugin manifest did not build
+        env:
+          OUTCOME: ${{ steps.invalid-plugin-manifest.outcome }}
+        run: |
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "Error: Invalid plugin manifest was not rejected"
+            exit 1
+          fi
+          BUILDS=$(thv ai-plugin builds --format json)
+          if printf '%s' "$BUILDS" | grep -Fq '"ghcr.io/stacklok/invalid-plugin:must-not-build"'; then
+            echo "Error: Invalid plugin manifest was built before rejection"
+            exit 1
+          fi
+
+      - name: Reject duplicate trimmed plugin tags
+        id: duplicate-plugin-tags
+        continue-on-error: true
+        uses: ./ai-plugin-build
+        with:
+          path: ./test-plugin
+          tags: "  ghcr.io/stacklok/test-plugin:duplicate  \n\tghcr.io/stacklok/test-plugin:duplicate\t"
+
+      - name: Verify duplicate plugin tags are rejected
+        env:
+          OUTCOME: ${{ steps.duplicate-plugin-tags.outcome }}
+        run: |
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "Error: duplicate trimmed plugin tags were not rejected"
+            exit 1
+          fi
+
+      - name: Stop Test ToolHive Daemon
+        if: always()
+        env:
+          DAEMON_PID: ${{ steps.plugin-daemon.outputs.pid }}
+        run: |
+          if [ -n "$DAEMON_PID" ]; then
+            kill "$DAEMON_PID" 2>/dev/null || true
+            wait "$DAEMON_PID" 2>/dev/null || true
+          fi
+
   validate-action-metadata:
     name: Validate Action Metadata
     runs-on: ubuntu-latest
@@ -425,3 +630,9 @@ jobs:
           echo "Validating skill-build/action.yml..."
           yq eval '.' skill-build/action.yml > /dev/null
           echo "✓ skill-build/action.yml is valid"
+
+      - name: Validate ai-plugin-build/action.yml
+        run: |
+          echo "Validating ai-plugin-build/action.yml..."
+          yq eval '.' ai-plugin-build/action.yml > /dev/null
+          echo "✓ ai-plugin-build/action.yml is valid"

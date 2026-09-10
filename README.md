@@ -95,6 +95,12 @@ Each explicit reference is built separately because ToolHive accepts one `--tag`
 
 [📖 Full Documentation](./skill-build/README.md)
 
+### 5. `ai-plugin-build` - Build AI-Tool Plugins
+
+Build, validate, and optionally publish signed AI-tool plugins as OCI artifacts. Supports ordered newline-delimited references and ToolHive's default reference behavior.
+
+[📖 Full Documentation](./ai-plugin-build/README.md)
+
 ## 📚 Examples
 
 ### Basic Installation and Usage

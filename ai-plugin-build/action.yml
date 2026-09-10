@@ -1,0 +1,218 @@
+name: 'Build ToolHive AI Plugin'
+description: 'Build and optionally push an AI-tool plugin as an OCI artifact'
+author: 'Stacklok'
+branding:
+  icon: 'package'
+  color: 'purple'
+
+inputs:
+  path:
+    description: 'Path to the AI-tool plugin directory containing .claude-plugin/plugin.json'
+    required: true
+  tags:
+    description: 'Newline-delimited complete OCI references. Blank lines are ignored and surrounding whitespace is trimmed.'
+    required: false
+    default: ''
+  push:
+    description: "Push every built artifact to a remote OCI registry. Accepts exactly 'true' or 'false'; requires prior registry login."
+    required: false
+    default: 'false'
+
+outputs:
+  reference:
+    description: 'First OCI reference built by the action'
+    value: ${{ steps.build.outputs.reference }}
+  references:
+    description: 'Newline-delimited OCI references built by the action, in input order'
+    value: ${{ steps.build.outputs.references }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check Inputs and Prerequisites
+      shell: bash
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_TAGS: ${{ inputs.tags }}
+        INPUT_PUSH: ${{ inputs.push }}
+      run: |
+        shopt -s extglob
+        case "$INPUT_PUSH" in
+          true|false) ;;
+          *)
+            echo "::error::The 'push' input must be exactly push: 'true' or push: 'false'."
+            exit 1
+            ;;
+        esac
+
+        TAG_REFERENCES=()
+        while IFS= read -r LINE || [ -n "$LINE" ]; do
+          REFERENCE="${LINE##+([[:space:]])}"
+          REFERENCE="${REFERENCE%%+([[:space:]])}"
+          [ -z "$REFERENCE" ] && continue
+
+          for EXISTING_REFERENCE in "${TAG_REFERENCES[@]}"; do
+            if [ "$REFERENCE" = "$EXISTING_REFERENCE" ]; then
+              echo "::error::The 'tags' input contains a duplicate OCI reference."
+              exit 1
+            fi
+          done
+          TAG_REFERENCES+=("$REFERENCE")
+        done <<< "$INPUT_TAGS"
+
+        if ! command -v thv &> /dev/null; then
+          echo "::error::ToolHive CLI (thv) is not installed. Please use the install action first."
+          exit 1
+        fi
+
+        if [ ! -d "$INPUT_PATH" ]; then
+          echo "::error::AI-tool plugin directory not found: $INPUT_PATH"
+          exit 1
+        fi
+
+        if [ ! -f "$INPUT_PATH/.claude-plugin/plugin.json" ]; then
+          echo "::error::.claude-plugin/plugin.json not found in $INPUT_PATH"
+          exit 1
+        fi
+
+    - name: Start ToolHive Daemon
+      id: daemon
+      shell: bash
+      run: |
+        EXISTING_URL="${TOOLHIVE_API_URL:-http://127.0.0.1:8080}"
+        HTTP_CODE=$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' "${EXISTING_URL}/health" 2>/dev/null || true)
+        if [ "$HTTP_CODE" = "204" ]; then
+          if [[ "$EXISTING_URL" == *$'\n'* || "$EXISTING_URL" == *$'\r'* ]]; then
+            echo "::error::TOOLHIVE_API_URL must not contain line breaks."
+            exit 1
+          fi
+          echo "ToolHive daemon already running at $EXISTING_URL"
+          echo "url=$EXISTING_URL" >> "$GITHUB_OUTPUT"
+          echo "started=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()' 2>/dev/null) || {
+          echo "::warning::python3 not available for port selection, falling back to 8080"
+          PORT=8080
+        }
+        DAEMON_URL="http://127.0.0.1:${PORT}"
+
+        echo "Starting thv serve on port $PORT..."
+        thv serve --host "127.0.0.1" --port "$PORT" &
+        DAEMON_PID=$!
+        echo "pid=$DAEMON_PID" >> "$GITHUB_OUTPUT"
+        echo "url=$DAEMON_URL" >> "$GITHUB_OUTPUT"
+        echo "started=true" >> "$GITHUB_OUTPUT"
+
+        MAX_WAIT=30
+        ELAPSED=0
+        while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
+          if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+            echo "::error::ToolHive daemon process exited unexpectedly"
+            wait "$DAEMON_PID" 2>/dev/null
+            exit 1
+          fi
+          HTTP_CODE=$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' "${DAEMON_URL}/health" 2>/dev/null || true)
+          if [ "$HTTP_CODE" = "204" ]; then
+            echo "ToolHive daemon is ready (port $PORT)"
+            break
+          fi
+          sleep 1
+          ELAPSED=$((ELAPSED + 1))
+        done
+
+        if [ "$ELAPSED" -ge "$MAX_WAIT" ]; then
+          echo "::error::ToolHive daemon failed to start within ${MAX_WAIT}s"
+          kill "$DAEMON_PID" 2>/dev/null || true
+          exit 1
+        fi
+
+    - name: Validate AI Plugin
+      shell: bash
+      env:
+        TOOLHIVE_API_URL: ${{ steps.daemon.outputs.url }}
+        INPUT_PATH: ${{ inputs.path }}
+      run: thv ai-plugin validate "$INPUT_PATH"
+
+    - name: Build AI Plugin
+      id: build
+      shell: bash
+      env:
+        TOOLHIVE_API_URL: ${{ steps.daemon.outputs.url }}
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_TAGS: ${{ inputs.tags }}
+      run: |
+        set -o pipefail
+        shopt -s extglob
+        TAG_REFERENCES=()
+        while IFS= read -r LINE || [ -n "$LINE" ]; do
+          TAG_REFERENCE="${LINE##+([[:space:]])}"
+          TAG_REFERENCE="${TAG_REFERENCE%%+([[:space:]])}"
+          [ -n "$TAG_REFERENCE" ] && TAG_REFERENCES+=("$TAG_REFERENCE")
+        done <<< "$INPUT_TAGS"
+
+        BUILT_REFERENCES=()
+        if [ "${#TAG_REFERENCES[@]}" -eq 0 ]; then
+          echo "Building AI-tool plugin from $INPUT_PATH..."
+          REFERENCE=$(thv ai-plugin build "$INPUT_PATH" | tail -n 1)
+          if [ -z "$REFERENCE" ]; then
+            echo "::error::AI-tool plugin build returned an empty reference."
+            exit 1
+          fi
+          BUILT_REFERENCES+=("$REFERENCE")
+          echo "Built AI-tool plugin: $REFERENCE"
+        else
+          for TAG_REFERENCE in "${TAG_REFERENCES[@]}"; do
+            echo "Building AI-tool plugin from $INPUT_PATH..."
+            REFERENCE=$(thv ai-plugin build "$INPUT_PATH" --tag "$TAG_REFERENCE" | tail -n 1)
+            if [ -z "$REFERENCE" ]; then
+              echo "::error::AI-tool plugin build returned an empty reference."
+              exit 1
+            fi
+            BUILT_REFERENCES+=("$REFERENCE")
+            echo "Built AI-tool plugin: $REFERENCE"
+          done
+        fi
+
+        write_multiline_output() {
+          local NAME="$1"
+          shift
+          local DELIMITER="ghadelimiter_${RANDOM}_${RANDOM}_$$"
+          while printf '%s\n' "$@" | grep -Fqx -- "$DELIMITER"; do
+            DELIMITER="${DELIMITER}_"
+          done
+          {
+            echo "${NAME}<<${DELIMITER}"
+            printf '%s\n' "$@"
+            echo "$DELIMITER"
+          } >> "$GITHUB_OUTPUT"
+        }
+
+        printf 'reference=%s\n' "${BUILT_REFERENCES[0]}" >> "$GITHUB_OUTPUT"
+        write_multiline_output references "${BUILT_REFERENCES[@]}"
+
+    - name: Push AI Plugins
+      if: inputs.push == 'true'
+      shell: bash
+      env:
+        TOOLHIVE_API_URL: ${{ steps.daemon.outputs.url }}
+        REFERENCES: ${{ steps.build.outputs.references }}
+      run: |
+        while IFS= read -r REFERENCE || [ -n "$REFERENCE" ]; do
+          [ -z "$REFERENCE" ] && continue
+          echo "Pushing $REFERENCE..."
+          thv ai-plugin push "$REFERENCE"
+          echo "Pushed AI-tool plugin: $REFERENCE"
+        done <<< "$REFERENCES"
+
+    - name: Stop ToolHive Daemon
+      if: always() && steps.daemon.outputs.started == 'true'
+      shell: bash
+      env:
+        DAEMON_PID: ${{ steps.daemon.outputs.pid }}
+      run: |
+        if [ -n "$DAEMON_PID" ]; then
+          kill "$DAEMON_PID" 2>/dev/null || true
+          wait "$DAEMON_PID" 2>/dev/null || true
+        fi
