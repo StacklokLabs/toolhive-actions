@@ -634,6 +634,153 @@ jobs:
             wait "$DAEMON_PID" 2>/dev/null || true
           fi
 
+  test-lockfile-actions:
+    name: Test Lock File Actions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Create fake ToolHive environment
+        run: |
+          FAKE_BIN="${RUNNER_TEMP}/fake-toolhive-bin"
+          PROJECT_ROOT="${RUNNER_TEMP}/toolhive-lockfile-test"
+          mkdir -p "$FAKE_BIN" "$PROJECT_ROOT"
+
+          cat > "$FAKE_BIN/curl" <<'CURL_SCRIPT'
+          #!/usr/bin/env bash
+          printf '204'
+          CURL_SCRIPT
+
+          cat > "$FAKE_BIN/thv" <<'THV_SCRIPT'
+          #!/usr/bin/env bash
+          set -u
+
+          printf '%s\n' "$*" >> "$FAKE_THV_LOG"
+          resource="${1:-}"
+          command="${2:-}"
+
+          has_flag() {
+            local expected="$1"
+            shift
+            for argument in "$@"; do
+              [ "$argument" != "$expected" ] || return 0
+            done
+            return 1
+          }
+
+          if [ "$command" = "sync" ]; then
+            if [ "${FAKE_SYNC_DRIFT:-false}" = "true" ] && \
+               ! has_flag --check "$@"; then
+              printf 'unexpected restored content\n' > \
+                "$FAKE_PROJECT_ROOT/untracked-restored.txt"
+            fi
+            exit 0
+          fi
+
+          if [ "$command" = "upgrade" ]; then
+            if has_flag --fail-on-changes "$@"; then
+              if [ "$resource" = "skill" ]; then
+                printf '%s\n' \
+                  '{"outcomes":[{"name":"test-skill","status":"upgraded"}]}'
+                exit 2
+              fi
+              printf '%s\n' '{"outcomes":[]}'
+              exit 0
+            fi
+
+            if [ "$resource" = "skill" ]; then
+              printf 'updated skill content\n' > "$FAKE_PROJECT_ROOT/skill.txt"
+            fi
+            exit 0
+          fi
+
+          if [ "$resource" = "serve" ]; then
+            exit 1
+          fi
+
+          echo "Unexpected fake thv command: $*" >&2
+          exit 1
+          THV_SCRIPT
+
+          chmod +x "$FAKE_BIN/curl" "$FAKE_BIN/thv"
+          : > "${RUNNER_TEMP}/fake-thv.log"
+
+          printf 'version: 1\n' > "$PROJECT_ROOT/toolhive.lock.yaml"
+          printf 'original skill content\n' > "$PROJECT_ROOT/skill.txt"
+          git -C "$PROJECT_ROOT" init
+          git -C "$PROJECT_ROOT" config user.name test
+          git -C "$PROJECT_ROOT" config user.email test@example.com
+          git -C "$PROJECT_ROOT" add .
+          git -C "$PROJECT_ROOT" commit -m initial
+
+          echo "$FAKE_BIN" >> "$GITHUB_PATH"
+          echo "FAKE_PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
+          echo "FAKE_THV_LOG=${RUNNER_TEMP}/fake-thv.log" >> "$GITHUB_ENV"
+
+      - name: Test lock file update
+        id: update-lockfile
+        uses: ./lockfile-update
+        with:
+          resources: all
+          clients: claude-code
+          project-root: ${{ runner.temp }}/toolhive-lockfile-test
+
+      - name: Verify lock file update outputs
+        env:
+          UPDATES_AVAILABLE: ${{ steps.update-lockfile.outputs.updates-available }}
+          SKILLS_UPDATES: ${{ steps.update-lockfile.outputs.skills-updates-available }}
+          AI_PLUGINS_UPDATES: ${{ steps.update-lockfile.outputs.ai-plugins-updates-available }}
+          UPDATED: ${{ steps.update-lockfile.outputs.updated }}
+          SKILLS_PLAN_FILE: ${{ steps.update-lockfile.outputs.skills-plan-file }}
+          AI_PLUGINS_PLAN_FILE: ${{ steps.update-lockfile.outputs.ai-plugins-plan-file }}
+        run: |
+          [ "$UPDATES_AVAILABLE" = "true" ]
+          [ "$SKILLS_UPDATES" = "true" ]
+          [ "$AI_PLUGINS_UPDATES" = "false" ]
+          [ "$UPDATED" = "true" ]
+          grep -Fq '"test-skill"' "$SKILLS_PLAN_FILE"
+          grep -Fq '"outcomes":[]' "$AI_PLUGINS_PLAN_FILE"
+          grep -Fq 'updated skill content' "$FAKE_PROJECT_ROOT/skill.txt"
+          grep -Fq 'skill upgrade --fail-on-changes' "$FAKE_THV_LOG"
+          grep -Fq 'ai-plugin upgrade --fail-on-changes' "$FAKE_THV_LOG"
+          grep -Fq 'skill sync --check' "$FAKE_THV_LOG"
+          grep -Fq 'ai-plugin sync --check' "$FAKE_THV_LOG"
+
+      - name: Commit simulated update
+        run: |
+          git -C "$FAKE_PROJECT_ROOT" add .
+          git -C "$FAKE_PROJECT_ROOT" commit -m update
+
+      - name: Test successful lock file verification
+        id: verify-lockfile
+        uses: ./lockfile-verify
+        with:
+          resources: all
+          clients: claude-code
+          project-root: ${{ runner.temp }}/toolhive-lockfile-test
+
+      - name: Verify successful result
+        env:
+          VERIFIED: ${{ steps.verify-lockfile.outputs.verified }}
+        run: test "$VERIFIED" = "true"
+
+      - name: Test drift detection
+        id: verify-drift
+        continue-on-error: true
+        uses: ./lockfile-verify
+        env:
+          FAKE_SYNC_DRIFT: 'true'
+        with:
+          resources: skills
+          clients: claude-code
+          project-root: ${{ runner.temp }}/toolhive-lockfile-test
+
+      - name: Verify drift is rejected
+        env:
+          OUTCOME: ${{ steps.verify-drift.outcome }}
+        run: test "$OUTCOME" = "failure"
+
   validate-action-metadata:
     name: Validate Action Metadata
     runs-on: ubuntu-latest
@@ -673,3 +820,15 @@ jobs:
           echo "Validating ai-plugin-build/action.yml..."
           yq eval '.' ai-plugin-build/action.yml > /dev/null
           echo "✓ ai-plugin-build/action.yml is valid"
+
+      - name: Validate lockfile-update/action.yml
+        run: |
+          echo "Validating lockfile-update/action.yml..."
+          yq eval '.' lockfile-update/action.yml > /dev/null
+          echo "✓ lockfile-update/action.yml is valid"
+
+      - name: Validate lockfile-verify/action.yml
+        run: |
+          echo "Validating lockfile-verify/action.yml..."
+          yq eval '.' lockfile-verify/action.yml > /dev/null
+          echo "✓ lockfile-verify/action.yml is valid"
