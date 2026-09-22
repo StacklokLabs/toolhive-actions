@@ -1,0 +1,380 @@
+name: 'Update ToolHive Lock File'
+description: 'Detect and apply updates to locked ToolHive skills and AI-tool plugins'
+author: 'Stacklok'
+branding:
+  icon: 'refresh-cw'
+  color: 'purple'
+
+inputs:
+  resources:
+    description: "Locked resources to update: 'skills', 'ai-plugins', or 'all'"
+    required: false
+    default: 'all'
+  clients:
+    description: 'Comma-separated target clients, or all; must match the project installation targets'
+    required: true
+  project-root:
+    description: 'Project root containing toolhive.lock.yaml'
+    required: false
+    default: '.'
+  apply:
+    description: "Apply available updates; accepts exactly 'true' or 'false'"
+    required: false
+    default: 'true'
+
+outputs:
+  updates-available:
+    description: 'Whether any selected resource has an available update'
+    value: ${{ steps.check.outputs.updates-available }}
+  skills-updates-available:
+    description: 'Whether a locked skill has an available update'
+    value: ${{ steps.check.outputs.skills-updates-available }}
+  ai-plugins-updates-available:
+    description: 'Whether a locked AI-tool plugin has an available update'
+    value: ${{ steps.check.outputs.ai-plugins-updates-available }}
+  updated:
+    description: 'Whether the action applied at least one update'
+    value: ${{ steps.result.outputs.updated }}
+  skills-plan-file:
+    description: 'Path to the JSON upgrade plan for skills'
+    value: ${{ steps.check.outputs.skills-plan-file }}
+  ai-plugins-plan-file:
+    description: 'Path to the JSON upgrade plan for AI-tool plugins'
+    value: ${{ steps.check.outputs.ai-plugins-plan-file }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check inputs and prerequisites
+      shell: bash
+      env:
+        INPUT_RESOURCES: ${{ inputs.resources }}
+        INPUT_CLIENTS: ${{ inputs.clients }}
+        INPUT_PROJECT_ROOT: ${{ inputs.project-root }}
+        INPUT_APPLY: ${{ inputs.apply }}
+      run: |
+        case "$INPUT_RESOURCES" in
+          skills|ai-plugins|all) ;;
+          *)
+            echo "::error::The 'resources' input must be 'skills', 'ai-plugins', or 'all'."
+            exit 1
+            ;;
+        esac
+
+        case "$INPUT_APPLY" in
+          true|false) ;;
+          *)
+            echo "::error::The 'apply' input must be exactly apply: 'true' or apply: 'false'."
+            exit 1
+            ;;
+        esac
+
+        if [ -z "$INPUT_CLIENTS" ]; then
+          echo "::error::The 'clients' input is required. Use a comma-separated list or 'all'."
+          exit 1
+        fi
+
+        if [[ "$INPUT_CLIENTS" == *$'\n'* || "$INPUT_CLIENTS" == *$'\r'* ]]; then
+          echo "::error::The 'clients' input must not contain line breaks."
+          exit 1
+        fi
+
+        if ! command -v thv >/dev/null 2>&1; then
+          echo "::error::ToolHive CLI (thv) is not installed. Use the install action first."
+          exit 1
+        fi
+
+        if ! command -v curl >/dev/null 2>&1; then
+          echo "::error::curl is required to check the ToolHive daemon."
+          exit 1
+        fi
+
+        if [ ! -d "$INPUT_PROJECT_ROOT" ]; then
+          echo "::error::Project root not found: $INPUT_PROJECT_ROOT"
+          exit 1
+        fi
+
+        if [ ! -f "$INPUT_PROJECT_ROOT/toolhive.lock.yaml" ]; then
+          echo "::error::toolhive.lock.yaml not found in $INPUT_PROJECT_ROOT"
+          exit 1
+        fi
+
+    - name: Start ToolHive daemon
+      id: daemon
+      shell: bash
+      run: |
+        EXISTING_URL="${TOOLHIVE_API_URL:-http://127.0.0.1:8080}"
+        if [[ "$EXISTING_URL" == *$'\n'* || "$EXISTING_URL" == *$'\r'* ]]; then
+          echo "::error::TOOLHIVE_API_URL must not contain line breaks."
+          exit 1
+        fi
+
+        HTTP_CODE=$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' \
+          "${EXISTING_URL}/health" 2>/dev/null || true)
+        if [ "$HTTP_CODE" = "204" ] || [ "$HTTP_CODE" = "503" ]; then
+          echo "ToolHive daemon already running at $EXISTING_URL"
+          echo "url=$EXISTING_URL" >> "$GITHUB_OUTPUT"
+          echo "started=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()' 2>/dev/null) || {
+          echo "::warning::python3 not available for port selection, falling back to 8080"
+          PORT=8080
+        }
+        DAEMON_URL="http://127.0.0.1:${PORT}"
+
+        echo "Starting thv serve on port $PORT..."
+        thv serve --host 127.0.0.1 --port "$PORT" &
+        DAEMON_PID=$!
+        echo "pid=$DAEMON_PID" >> "$GITHUB_OUTPUT"
+        echo "url=$DAEMON_URL" >> "$GITHUB_OUTPUT"
+        echo "started=true" >> "$GITHUB_OUTPUT"
+
+        for _ in $(seq 1 30); do
+          if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+            echo "::error::ToolHive daemon process exited unexpectedly."
+            wait "$DAEMON_PID" 2>/dev/null || true
+            exit 1
+          fi
+
+          HTTP_CODE=$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' \
+            "${DAEMON_URL}/health" 2>/dev/null || true)
+          if [ "$HTTP_CODE" = "204" ] || [ "$HTTP_CODE" = "503" ]; then
+            echo "ToolHive daemon is ready at $DAEMON_URL"
+            exit 0
+          fi
+          sleep 1
+        done
+
+        echo "::error::ToolHive daemon failed to start within 30 seconds."
+        kill "$DAEMON_PID" 2>/dev/null || true
+        wait "$DAEMON_PID" 2>/dev/null || true
+        exit 1
+
+    - name: Restore locked state
+      shell: bash
+      env:
+        TOOLHIVE_API_URL: ${{ steps.daemon.outputs.url }}
+        INPUT_RESOURCES: ${{ inputs.resources }}
+        INPUT_CLIENTS: ${{ inputs.clients }}
+        INPUT_PROJECT_ROOT: ${{ inputs.project-root }}
+      run: |
+        sync_resource() {
+          local RESOURCE="$1"
+          echo "Restoring locked ${RESOURCE} content..."
+          thv "$RESOURCE" sync --yes \
+            --project-root "$INPUT_PROJECT_ROOT" \
+            --clients "$INPUT_CLIENTS"
+        }
+
+        case "$INPUT_RESOURCES" in
+          skills) sync_resource skill ;;
+          ai-plugins) sync_resource ai-plugin ;;
+          all)
+            sync_resource skill
+            sync_resource ai-plugin
+            ;;
+        esac
+
+    - name: Check for updates
+      id: check
+      shell: bash
+      env:
+        TOOLHIVE_API_URL: ${{ steps.daemon.outputs.url }}
+        INPUT_RESOURCES: ${{ inputs.resources }}
+        INPUT_CLIENTS: ${{ inputs.clients }}
+        INPUT_PROJECT_ROOT: ${{ inputs.project-root }}
+      run: |
+        TEMP_ROOT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+        PLAN_DIR=$(mktemp -d "${TEMP_ROOT}/toolhive-lockfile-update.XXXXXX")
+        SKILLS_PLAN="${PLAN_DIR}/skills-plan.json"
+        AI_PLUGINS_PLAN="${PLAN_DIR}/ai-plugins-plan.json"
+        printf '{}\n' > "$SKILLS_PLAN"
+        printf '{}\n' > "$AI_PLUGINS_PLAN"
+
+        SKILLS_UPDATES=false
+        AI_PLUGINS_UPDATES=false
+
+        check_resource() {
+          local RESOURCE="$1"
+          local LABEL="$2"
+          local PLAN_FILE="$3"
+          local ERROR_FILE="${PLAN_FILE%.json}.err"
+          local EXIT_CODE
+
+          echo "Checking locked ${LABEL} for updates..."
+          set +e
+          thv "$RESOURCE" upgrade --fail-on-changes \
+            --project-root "$INPUT_PROJECT_ROOT" \
+            --clients "$INPUT_CLIENTS" \
+            --format json > "$PLAN_FILE" 2> "$ERROR_FILE"
+          EXIT_CODE=$?
+          set -e
+
+          [ ! -s "$PLAN_FILE" ] || cat "$PLAN_FILE"
+          [ ! -s "$ERROR_FILE" ] || cat "$ERROR_FILE" >&2
+
+          case "$EXIT_CODE" in
+            0)
+              if [ ! -s "$PLAN_FILE" ]; then
+                printf '{"outcomes":[]}\n' > "$PLAN_FILE"
+              fi
+              echo "Locked ${LABEL} are up to date."
+              ;;
+            2)
+              if [ ! -s "$PLAN_FILE" ]; then
+                echo "::error::ToolHive reported ${LABEL} updates without a JSON plan."
+                exit 1
+              fi
+              if [ "$RESOURCE" = "skill" ]; then
+                SKILLS_UPDATES=true
+              else
+                AI_PLUGINS_UPDATES=true
+              fi
+              ;;
+            3)
+              echo "::error::The ${LABEL} upgrade check failed."
+              exit 1
+              ;;
+            4)
+              echo "::error::The ${LABEL} upgrade is blocked by a signer or repository policy guard."
+              exit 1
+              ;;
+            *)
+              echo "::error::Unexpected exit code ${EXIT_CODE} from thv ${RESOURCE} upgrade."
+              exit 1
+              ;;
+          esac
+        }
+
+        case "$INPUT_RESOURCES" in
+          skills) check_resource skill skills "$SKILLS_PLAN" ;;
+          ai-plugins) check_resource ai-plugin "AI-tool plugins" "$AI_PLUGINS_PLAN" ;;
+          all)
+            check_resource skill skills "$SKILLS_PLAN"
+            check_resource ai-plugin "AI-tool plugins" "$AI_PLUGINS_PLAN"
+            ;;
+        esac
+
+        UPDATES_AVAILABLE=false
+        if [ "$SKILLS_UPDATES" = "true" ] || [ "$AI_PLUGINS_UPDATES" = "true" ]; then
+          UPDATES_AVAILABLE=true
+        fi
+
+        {
+          echo "updates-available=$UPDATES_AVAILABLE"
+          echo "skills-updates-available=$SKILLS_UPDATES"
+          echo "ai-plugins-updates-available=$AI_PLUGINS_UPDATES"
+          echo "skills-plan-file=$SKILLS_PLAN"
+          echo "ai-plugins-plan-file=$AI_PLUGINS_PLAN"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Apply updates
+      if: inputs.apply == 'true' && steps.check.outputs.updates-available == 'true'
+      shell: bash
+      env:
+        TOOLHIVE_API_URL: ${{ steps.daemon.outputs.url }}
+        INPUT_CLIENTS: ${{ inputs.clients }}
+        INPUT_PROJECT_ROOT: ${{ inputs.project-root }}
+        SKILLS_UPDATES: ${{ steps.check.outputs.skills-updates-available }}
+        AI_PLUGINS_UPDATES: ${{ steps.check.outputs.ai-plugins-updates-available }}
+      run: |
+        apply_resource() {
+          local RESOURCE="$1"
+          local LABEL="$2"
+          local EXIT_CODE
+
+          echo "Applying locked ${LABEL} updates..."
+          set +e
+          thv "$RESOURCE" upgrade --yes \
+            --project-root "$INPUT_PROJECT_ROOT" \
+            --clients "$INPUT_CLIENTS"
+          EXIT_CODE=$?
+          set -e
+
+          case "$EXIT_CODE" in
+            0) ;;
+            4)
+              echo "::error::The ${LABEL} upgrade is blocked by a signer or repository policy guard."
+              exit 1
+              ;;
+            *)
+              echo "::error::The ${LABEL} upgrade failed with exit code ${EXIT_CODE}."
+              exit 1
+              ;;
+          esac
+        }
+
+        if [ "$SKILLS_UPDATES" = "true" ]; then
+          apply_resource skill skills
+        fi
+        if [ "$AI_PLUGINS_UPDATES" = "true" ]; then
+          apply_resource ai-plugin "AI-tool plugins"
+        fi
+
+    - name: Verify updated state
+      if: inputs.apply == 'true'
+      shell: bash
+      env:
+        TOOLHIVE_API_URL: ${{ steps.daemon.outputs.url }}
+        INPUT_RESOURCES: ${{ inputs.resources }}
+        INPUT_CLIENTS: ${{ inputs.clients }}
+        INPUT_PROJECT_ROOT: ${{ inputs.project-root }}
+      run: |
+        check_resource() {
+          local RESOURCE="$1"
+          thv "$RESOURCE" sync --check \
+            --project-root "$INPUT_PROJECT_ROOT" \
+            --clients "$INPUT_CLIENTS"
+        }
+
+        case "$INPUT_RESOURCES" in
+          skills) check_resource skill ;;
+          ai-plugins) check_resource ai-plugin ;;
+          all)
+            check_resource skill
+            check_resource ai-plugin
+            ;;
+        esac
+
+    - name: Set result
+      id: result
+      shell: bash
+      env:
+        INPUT_APPLY: ${{ inputs.apply }}
+        UPDATES_AVAILABLE: ${{ steps.check.outputs.updates-available }}
+      run: |
+        UPDATED=false
+        if [ "$INPUT_APPLY" = "true" ] && [ "$UPDATES_AVAILABLE" = "true" ]; then
+          UPDATED=true
+        fi
+        echo "updated=$UPDATED" >> "$GITHUB_OUTPUT"
+
+    - name: Add job summary
+      shell: bash
+      env:
+        UPDATES_AVAILABLE: ${{ steps.check.outputs.updates-available }}
+        SKILLS_UPDATES: ${{ steps.check.outputs.skills-updates-available }}
+        AI_PLUGINS_UPDATES: ${{ steps.check.outputs.ai-plugins-updates-available }}
+        UPDATED: ${{ steps.result.outputs.updated }}
+      run: |
+        {
+          echo "### ToolHive lock file update"
+          echo
+          echo "- Updates available: \`$UPDATES_AVAILABLE\`"
+          echo "- Skill updates available: \`$SKILLS_UPDATES\`"
+          echo "- AI-tool plugin updates available: \`$AI_PLUGINS_UPDATES\`"
+          echo "- Updates applied: \`$UPDATED\`"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Stop ToolHive daemon
+      if: always() && steps.daemon.outputs.started == 'true'
+      shell: bash
+      env:
+        DAEMON_PID: ${{ steps.daemon.outputs.pid }}
+      run: |
+        if [ -n "$DAEMON_PID" ]; then
+          kill "$DAEMON_PID" 2>/dev/null || true
+          wait "$DAEMON_PID" 2>/dev/null || true
+        fi

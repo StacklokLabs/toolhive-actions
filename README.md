@@ -3,7 +3,9 @@
 [![Test](https://github.com/StacklokLabs/toolhive-actions/actions/workflows/test.yml/badge.svg)](https://github.com/StacklokLabs/toolhive-actions/actions/workflows/test.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-GitHub Actions for installing and running [ToolHive](https://github.com/stacklok/toolhive), a tool for managing Model Context Protocol (MCP) servers.
+GitHub Actions for using [ToolHive](https://github.com/stacklok/toolhive) in
+CI. The actions install ToolHive, run Model Context Protocol (MCP) servers, and
+manage skills and AI-tool plugins.
 
 ## 🚀 Quick Start
 
@@ -100,6 +102,21 @@ Each explicit reference is built separately because ToolHive accepts one `--tag`
 Build, validate, and optionally publish signed AI-tool plugins as OCI artifacts. Supports ordered newline-delimited references and ToolHive's default reference behavior.
 
 [📖 Full Documentation](./ai-plugin-build/README.md)
+
+### 6. `lockfile-update` - Update Locked Content
+
+Restores the pinned project state, checks locked skills and AI-tool plugins for
+updates, and optionally applies those updates for a pull-request workflow.
+Signer-change and repository-change guards remain enabled.
+
+[📖 Full Documentation](./lockfile-update/README.md)
+
+### 7. `lockfile-verify` - Verify Locked Content
+
+Restores skills and AI-tool plugins from `toolhive.lock.yaml` and verifies that
+the committed content matches the pinned artifacts and trust policy.
+
+[📖 Full Documentation](./lockfile-verify/README.md)
 
 ## 📚 Examples
 
@@ -273,4 +290,3 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 - [GitHub Issues](https://github.com/StacklokLabs/toolhive-actions/issues) - Bug reports and feature requests
 - [Discord](https://discord.gg/stacklok) - Community support and discussions
 - [Documentation](https://docs.stacklok.com/toolhive) - Official ToolHive documentation
-

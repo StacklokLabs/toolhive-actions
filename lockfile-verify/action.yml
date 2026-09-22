@@ -1,0 +1,193 @@
+name: 'Verify ToolHive Lock File'
+description: 'Verify that committed skills and AI-tool plugins match the ToolHive lock file'
+author: 'Stacklok'
+branding:
+  icon: 'check-circle'
+  color: 'green'
+
+inputs:
+  resources:
+    description: "Locked resources to verify: 'skills', 'ai-plugins', or 'all'"
+    required: false
+    default: 'all'
+  clients:
+    description: 'Comma-separated target clients, or all; must match the project installation targets'
+    required: true
+  project-root:
+    description: 'Git project root containing toolhive.lock.yaml'
+    required: false
+    default: '.'
+
+outputs:
+  verified:
+    description: 'Whether committed content matches the ToolHive lock file'
+    value: ${{ steps.verify.outputs.verified }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check inputs and prerequisites
+      shell: bash
+      env:
+        INPUT_RESOURCES: ${{ inputs.resources }}
+        INPUT_CLIENTS: ${{ inputs.clients }}
+        INPUT_PROJECT_ROOT: ${{ inputs.project-root }}
+      run: |
+        case "$INPUT_RESOURCES" in
+          skills|ai-plugins|all) ;;
+          *)
+            echo "::error::The 'resources' input must be 'skills', 'ai-plugins', or 'all'."
+            exit 1
+            ;;
+        esac
+
+        if [ -z "$INPUT_CLIENTS" ]; then
+          echo "::error::The 'clients' input is required. Use a comma-separated list or 'all'."
+          exit 1
+        fi
+
+        if [[ "$INPUT_CLIENTS" == *$'\n'* || "$INPUT_CLIENTS" == *$'\r'* ]]; then
+          echo "::error::The 'clients' input must not contain line breaks."
+          exit 1
+        fi
+
+        if ! command -v thv >/dev/null 2>&1; then
+          echo "::error::ToolHive CLI (thv) is not installed. Use the install action first."
+          exit 1
+        fi
+
+        if ! command -v curl >/dev/null 2>&1; then
+          echo "::error::curl is required to check the ToolHive daemon."
+          exit 1
+        fi
+
+        if [ ! -d "$INPUT_PROJECT_ROOT" ]; then
+          echo "::error::Project root not found: $INPUT_PROJECT_ROOT"
+          exit 1
+        fi
+
+        if [ ! -f "$INPUT_PROJECT_ROOT/toolhive.lock.yaml" ]; then
+          echo "::error::toolhive.lock.yaml not found in $INPUT_PROJECT_ROOT"
+          exit 1
+        fi
+
+        if ! git -C "$INPUT_PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+          echo "::error::Project root is not inside a Git worktree: $INPUT_PROJECT_ROOT"
+          exit 1
+        fi
+
+    - name: Start ToolHive daemon
+      id: daemon
+      shell: bash
+      run: |
+        EXISTING_URL="${TOOLHIVE_API_URL:-http://127.0.0.1:8080}"
+        if [[ "$EXISTING_URL" == *$'\n'* || "$EXISTING_URL" == *$'\r'* ]]; then
+          echo "::error::TOOLHIVE_API_URL must not contain line breaks."
+          exit 1
+        fi
+
+        HTTP_CODE=$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' \
+          "${EXISTING_URL}/health" 2>/dev/null || true)
+        if [ "$HTTP_CODE" = "204" ] || [ "$HTTP_CODE" = "503" ]; then
+          echo "ToolHive daemon already running at $EXISTING_URL"
+          echo "url=$EXISTING_URL" >> "$GITHUB_OUTPUT"
+          echo "started=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()' 2>/dev/null) || {
+          echo "::warning::python3 not available for port selection, falling back to 8080"
+          PORT=8080
+        }
+        DAEMON_URL="http://127.0.0.1:${PORT}"
+
+        echo "Starting thv serve on port $PORT..."
+        thv serve --host 127.0.0.1 --port "$PORT" &
+        DAEMON_PID=$!
+        echo "pid=$DAEMON_PID" >> "$GITHUB_OUTPUT"
+        echo "url=$DAEMON_URL" >> "$GITHUB_OUTPUT"
+        echo "started=true" >> "$GITHUB_OUTPUT"
+
+        for _ in $(seq 1 30); do
+          if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+            echo "::error::ToolHive daemon process exited unexpectedly."
+            wait "$DAEMON_PID" 2>/dev/null || true
+            exit 1
+          fi
+
+          HTTP_CODE=$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' \
+            "${DAEMON_URL}/health" 2>/dev/null || true)
+          if [ "$HTTP_CODE" = "204" ] || [ "$HTTP_CODE" = "503" ]; then
+            echo "ToolHive daemon is ready at $DAEMON_URL"
+            exit 0
+          fi
+          sleep 1
+        done
+
+        echo "::error::ToolHive daemon failed to start within 30 seconds."
+        kill "$DAEMON_PID" 2>/dev/null || true
+        wait "$DAEMON_PID" 2>/dev/null || true
+        exit 1
+
+    - name: Restore locked content
+      shell: bash
+      env:
+        TOOLHIVE_API_URL: ${{ steps.daemon.outputs.url }}
+        INPUT_RESOURCES: ${{ inputs.resources }}
+        INPUT_CLIENTS: ${{ inputs.clients }}
+        INPUT_PROJECT_ROOT: ${{ inputs.project-root }}
+      run: |
+        sync_resource() {
+          local RESOURCE="$1"
+          echo "Restoring locked ${RESOURCE} content..."
+          thv "$RESOURCE" sync --yes \
+            --project-root "$INPUT_PROJECT_ROOT" \
+            --clients "$INPUT_CLIENTS"
+        }
+
+        case "$INPUT_RESOURCES" in
+          skills) sync_resource skill ;;
+          ai-plugins) sync_resource ai-plugin ;;
+          all)
+            sync_resource skill
+            sync_resource ai-plugin
+            ;;
+        esac
+
+    - name: Verify committed content
+      id: verify
+      shell: bash
+      env:
+        INPUT_PROJECT_ROOT: ${{ inputs.project-root }}
+      run: |
+        STATUS=$(git -C "$INPUT_PROJECT_ROOT" status \
+          --porcelain=v1 --untracked-files=all -- .)
+
+        if [ -n "$STATUS" ]; then
+          echo "Committed ToolHive content does not match toolhive.lock.yaml."
+          echo
+          git -C "$INPUT_PROJECT_ROOT" diff -- . || true
+          echo "$STATUS"
+          echo "::error::Commit the exact content restored from the lock file."
+          exit 1
+        fi
+
+        echo "Committed ToolHive content matches toolhive.lock.yaml."
+        echo "verified=true" >> "$GITHUB_OUTPUT"
+
+        {
+          echo "### ToolHive lock file verification"
+          echo
+          echo "Committed skills and AI-tool plugins match the pinned content."
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Stop ToolHive daemon
+      if: always() && steps.daemon.outputs.started == 'true'
+      shell: bash
+      env:
+        DAEMON_PID: ${{ steps.daemon.outputs.pid }}
+      run: |
+        if [ -n "$DAEMON_PID" ]; then
+          kill "$DAEMON_PID" 2>/dev/null || true
+          wait "$DAEMON_PID" 2>/dev/null || true
+        fi
