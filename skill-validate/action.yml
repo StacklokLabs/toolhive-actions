@@ -1,0 +1,62 @@
+name: 'Validate ToolHive Skills and AI Plugins'
+description: 'Validate skills and AI-tool plugins with ToolHive and report findings as annotations'
+author: 'Stacklok'
+branding:
+  icon: 'check-square'
+  color: 'green'
+
+inputs:
+  paths:
+    description: "Newline-delimited skill or AI-tool plugin directories, or single-level glob patterns such as 'skills/*'. Blank lines are ignored and surrounding whitespace is trimmed."
+    required: true
+  fail-on-warnings:
+    description: "Fail when validation reports warnings. Accepts exactly 'true' or 'false'."
+    required: false
+    default: 'false'
+
+outputs:
+  valid:
+    description: "'true' when no directory has validation errors"
+    value: ${{ steps.validate.outputs.valid }}
+  report-file:
+    description: 'Path to a JSON report with the result for every validated directory'
+    value: ${{ steps.validate.outputs.report-file }}
+  error-count:
+    description: 'Total number of validation errors'
+    value: ${{ steps.validate.outputs.error-count }}
+  warning-count:
+    description: 'Total number of validation warnings'
+    value: ${{ steps.validate.outputs.warning-count }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Resolve Directories
+      id: resolve
+      shell: bash
+      env:
+        INPUT_PATHS: ${{ inputs.paths }}
+        INPUT_FAIL_ON_WARNINGS: ${{ inputs.fail-on-warnings }}
+      run: bash "$GITHUB_ACTION_PATH/validate.sh" resolve
+
+    - name: Start ToolHive Daemon
+      id: daemon
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/../lib/daemon.sh" start
+
+    - name: Validate Skills and AI Plugins
+      id: validate
+      shell: bash
+      env:
+        TOOLHIVE_API_URL: ${{ steps.daemon.outputs.url }}
+        WORK_DIR: ${{ steps.resolve.outputs.work-dir }}
+        INPUT_FAIL_ON_WARNINGS: ${{ inputs.fail-on-warnings }}
+      run: bash "$GITHUB_ACTION_PATH/validate.sh" validate
+
+    - name: Stop ToolHive Daemon
+      if: always() && steps.daemon.outputs.started == 'true'
+      shell: bash
+      env:
+        DAEMON_PID: ${{ steps.daemon.outputs.pid }}
+        DAEMON_STARTED: ${{ steps.daemon.outputs.started }}
+      run: bash "$GITHUB_ACTION_PATH/../lib/daemon.sh" stop
