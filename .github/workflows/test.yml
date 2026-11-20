@@ -997,6 +997,24 @@ jobs:
             exit 1
           fi
 
+      - name: Fail when thv returns no validation result
+        run: |
+          # With an unreachable API server, thv exits 1 and prints nothing on
+          # stdout. That must fail validation, not count as zero results.
+          WORK=$(mktemp -d)
+          export GITHUB_OUTPUT="$WORK/out" RUNNER_TEMP="$WORK"
+          INPUT_PATHS="$FIXTURES/skills/valid-skill" bash skill-validate/validate.sh resolve
+          WORK_DIR=$(sed -n 's/^work-dir=//p' "$GITHUB_OUTPUT")
+          export WORK_DIR
+          if TOOLHIVE_API_URL=http://127.0.0.1:9 bash skill-validate/validate.sh validate; then
+            echo "Error: validation passed without a result from thv"
+            exit 1
+          fi
+          if grep -q '^valid=' "$GITHUB_OUTPUT"; then
+            echo "Error: validation wrote outputs without a result from thv"
+            exit 1
+          fi
+
       - name: Fail on warnings when requested
         id: fail-on-warnings
         continue-on-error: true

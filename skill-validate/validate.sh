@@ -233,8 +233,12 @@ validate() {
     echo "::endgroup::"
 
     # thv exits 1 for an invalid skill but still prints the result; anything
-    # else (no API server, unknown command) is not a validation result.
-    if ! printf '%s' "$output" | jq -e 'type == "object" and (.valid | type == "boolean")' >/dev/null 2>&1; then
+    # else (no API server, unknown command) is not a validation result. Slurp
+    # so that empty output is an empty array: jq -e accepts empty input as
+    # success in jq 1.6.
+    if ! printf '%s' "$output" | jq -e -s \
+        'length == 1 and (.[0] | type == "object" and (.valid | type == "boolean"))' \
+        >/dev/null 2>&1; then
       echo "::error::thv $command validate failed for $path (exit code $rc) without a validation result."
       exit 1
     fi
@@ -248,6 +252,15 @@ validate() {
        + (if .findings then {findings: .findings} else {} end)
        + {annotation_path: $annotation_path}' >> "$results"
   done < "$targets"
+
+  # Every target must have produced exactly one result.
+  local expected actual
+  expected=$(grep -c '' "$targets" || true)
+  actual=$(grep -c '' "$results" || true)
+  if [ "$expected" -eq 0 ] || [ "$actual" -ne "$expected" ]; then
+    echo "::error::Expected $expected validation results but got $actual."
+    exit 1
+  fi
 
   jq -s '{valid: all(.[]; .valid), results: map(del(.annotation_path))}' "$results" > "$report"
 
