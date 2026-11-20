@@ -1,0 +1,8 @@
+{
+  "name": "gamma",
+  "description": "Fixture AI-tool plugin for the publish action",
+  "version": "0.1.0",
+  "author": {
+    "name": "Stacklok"
+  }
+}
