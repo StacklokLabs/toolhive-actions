@@ -83,7 +83,7 @@ measure_dir() {
       chars=$(file_chars "$file")
       directory_chars=$((directory_chars + chars))
     fi
-  done < <(find "$dir" -type f -print0)
+  done < <(find "$dir" -name .git -prune -o -type f -print0)
   jq -n -c \
     --argjson skill_md_chars "$(file_chars "$dir/SKILL.md")" \
     --argjson skill_md_lines "$(file_lines "$dir/SKILL.md")" \
@@ -94,8 +94,8 @@ measure_dir() {
 }
 
 # Prints the metrics of a skill directory at a commit as JSON. Arguments:
-# repository, commit, directory path relative to the repository root, scratch
-# directory.
+# repository, commit, directory path relative to the repository root (empty
+# or ending in /), scratch directory.
 measure_commit() {
   local repo="$1" commit="$2" prefix="$3" scratch="$4" file target
   rm -rf "$scratch"
@@ -104,14 +104,90 @@ measure_commit() {
     target="$scratch/${file#"$prefix"}"
     mkdir -p "$(dirname "$target")"
     git -C "$repo" show "$commit:$file" > "$target"
-  done < <(git -C "$repo" ls-tree -r -z --name-only "$commit" -- "$prefix")
+  # An empty prefix is the repository root, which git names "." here.
+  done < <(git -C "$repo" ls-tree -r -z --name-only "$commit" -- "${prefix:-.}")
   measure_dir "$scratch"
+}
+
+# Prints one skill's report entry as JSON. Arguments: path, current metrics
+# (null for a deleted skill), base metrics (or null), base status.
+record_skill() {
+  jq -n -c \
+    --arg path "$1" \
+    --argjson current "$2" \
+    --argjson base "$3" \
+    --arg base_status "$4" \
+    --argjson max_tokens "$MAX_TOKENS" \
+    --argjson max_lines "$MAX_LINES" '
+    def tokens: if . == null then null else {
+      skill_md_tokens: ((.skill_md_chars + 3) / 4 | floor),
+      skill_md_lines: .skill_md_lines,
+      directory_tokens: ((.directory_chars + 3) / 4 | floor),
+      description_tokens: ((.description_chars + 3) / 4 | floor)} end;
+    ($current | tokens) as $now
+    | {path: $path, name: ($path | split("/") | last),
+       current: $now,
+       base: ($base | tokens),
+       base_status: $base_status,
+       breaches: (if $now == null then [] else [
+         if $now.skill_md_tokens > $max_tokens then
+           "SKILL.md is about \($now.skill_md_tokens) tokens (limit \($max_tokens))" else empty end,
+         if $now.skill_md_lines > $max_lines then
+           "SKILL.md has \($now.skill_md_lines) lines (limit \($max_lines))" else empty end] end)}'
+}
+
+# Prints "<path>\t<repository>\t<prefix>" for each directory that matches a
+# single-level glob, had a SKILL.md at the base commit, and is no longer a
+# skill. The path is spelled like the pattern.
+base_matches() {
+  local entry="$1" base="$2" lead rest seg repo prefix file dir rel candidate
+  entry=$(paths_normalize "$entry")
+  # The literal directories before the first segment with a glob character.
+  if [[ "$entry" == /* ]]; then lead="/"; rest="${entry#/}"; else lead=""; rest="$entry"; fi
+  while [[ "$rest" == */* ]]; do
+    seg="${rest%%/*}"
+    [[ "$seg" == *[*?[]* ]] && break
+    case "$lead" in
+      '') lead="$seg" ;;
+      /) lead="/$seg" ;;
+      *) lead="$lead/$seg" ;;
+    esac
+    rest="${rest#*/}"
+  done
+  [ -z "$lead" ] && lead="."
+  [ -d "$lead" ] || return 0
+  repo=$(git -C "$lead" rev-parse --show-toplevel 2>/dev/null) || return 0
+  prefix=$(git -C "$lead" rev-parse --show-prefix)
+  git -C "$repo" cat-file -e "${base}^{commit}" 2>/dev/null || return 0
+
+  local depth slashes
+  slashes="${rest//[!\/]/}"
+  depth=${#slashes}
+  while IFS= read -r -d '' file; do
+    case "$file" in
+      */SKILL.md) dir="${file%/SKILL.md}" ;;
+      *) continue ;;
+    esac
+    [ -n "$prefix" ] && [[ "$dir" != "$prefix"* ]] && continue
+    rel="${dir#"$prefix"}"
+    [ -z "$rel" ] && continue
+    # A single-level glob matches the same number of segments.
+    slashes="${rel//[!\/]/}"
+    [ "${#slashes}" -eq "$depth" ] || continue
+    # shellcheck disable=SC2053 # The pattern is intentionally unquoted.
+    [[ "$rel" == $rest ]] || continue
+    if [ "$lead" = "." ]; then candidate="$rel"; else candidate="$lead/$rel"; fi
+    [ -f "$candidate/SKILL.md" ] && continue
+    printf '%s\t%s\t%s\n' "$candidate" "$repo" "$prefix$rel/"
+  done < <(git -C "$repo" ls-tree -r -z --name-only "$base" -- "${prefix:-.}")
 }
 
 measure() {
   check_positive_integer max-skill-tokens "${INPUT_MAX_SKILL_TOKENS:-5000}"
   check_positive_integer max-skill-lines "${INPUT_MAX_SKILL_LINES:-500}"
   local max_tokens="${INPUT_MAX_SKILL_TOKENS:-5000}" max_lines="${INPUT_MAX_SKILL_LINES:-500}"
+  MAX_TOKENS="$max_tokens"
+  MAX_LINES="$max_lines"
   local base="${INPUT_BASE_REF:-}"
 
   local tool
@@ -130,7 +206,11 @@ measure() {
   : > "$targets"
   : > "$results"
 
-  if ! resolve_paths "${INPUT_PATHS:-}" "$targets" "skill"; then
+  # A glob that matches nothing now may still match skills deleted since the
+  # base commit; it fails only if it matches nothing there either.
+  local unmatched="$work_dir/unmatched"
+  : > "$unmatched"
+  if ! resolve_paths "${INPUT_PATHS:-}" "$targets" "skill" "$unmatched"; then
     exit 1
   fi
 
@@ -163,31 +243,40 @@ measure() {
         echo "::warning::$path is not in a Git repository, so it has no deltas."
       fi
     fi
-
-    jq -n -c \
-      --arg path "$path" \
-      --argjson current "$current" \
-      --argjson base "$base_metrics" \
-      --arg base_status "$base_status" \
-      --argjson max_tokens "$max_tokens" \
-      --argjson max_lines "$max_lines" '
-      def tokens: {
-        skill_md_tokens: ((.skill_md_chars + 3) / 4 | floor),
-        skill_md_lines: .skill_md_lines,
-        directory_tokens: ((.directory_chars + 3) / 4 | floor),
-        description_tokens: ((.description_chars + 3) / 4 | floor)};
-      ($current | tokens) as $now
-      | {path: $path, name: ($path | split("/") | last),
-         current: $now,
-         base: (if $base == null then null else ($base | tokens) end),
-         base_status: $base_status,
-         breaches: ([
-           if $now.skill_md_tokens > $max_tokens then
-             "SKILL.md is about \($now.skill_md_tokens) tokens (limit \($max_tokens))" else empty end,
-           if $now.skill_md_lines > $max_lines then
-             "SKILL.md has \($now.skill_md_lines) lines (limit \($max_lines))" else empty end])}
-      ' >> "$results"
+    record_skill "$path" "$current" "$base_metrics" "$base_status" >> "$results"
   done < "$targets"
+
+  # Skills matched by a glob at the base commit that are gone now count as
+  # deleted, so removals show up in the deltas and the description total.
+  local line entry matches deleted="$work_dir/deleted"
+  : > "$deleted"
+  while IFS= read -r line || [ -n "$line" ]; do
+    entry=$(paths_trim "$line")
+    [[ "$entry" == *[*?[]* ]] || continue
+    matches=""
+    if [ -n "$base" ]; then
+      matches=$(base_matches "$entry" "$base")
+    fi
+    if [ -n "$matches" ]; then
+      printf '%s\n' "$matches" >> "$deleted"
+    elif grep -Fxq -- "$entry" "$unmatched"; then
+      echo "::error::The pattern '$entry' matched no skill directories."
+      exit 1
+    fi
+  done <<< "${INPUT_PATHS:-}"
+  local seen_deleted=$'\n'
+  while IFS=$'\t' read -r path repo prefix; do
+    [[ "$seen_deleted" == *$'\n'"$path"$'\n'* ]] && continue
+    seen_deleted="${seen_deleted}${path}"$'\n'
+    base_note=available
+    base_metrics=$(measure_commit "$repo" "$base" "$prefix" "$work_dir/base")
+    record_skill "$path" null "$base_metrics" deleted >> "$results"
+  done < "$deleted"
+
+  if [ ! -s "$results" ]; then
+    echo "::error::No skill directories to measure."
+    exit 1
+  fi
 
   local report="$work_dir/report.json"
   jq -s \
@@ -196,8 +285,9 @@ measure() {
     --arg base "$base" \
     --arg base_note "$base_note" '
     def delta($key): if .base_status == "found" then .current[$key] - .base[$key]
-      elif .base_status == "new" then .current[$key] else null end;
-    map(. + {delta: (if .base_status == "found" or .base_status == "new" then
+      elif .base_status == "new" then .current[$key]
+      elif .base_status == "deleted" then -.base[$key] else null end;
+    map(. + {delta: (if .base_status == "found" or .base_status == "new" or .base_status == "deleted" then
       {skill_md_tokens: delta("skill_md_tokens"), skill_md_lines: delta("skill_md_lines"),
        directory_tokens: delta("directory_tokens"), description_tokens: delta("description_tokens")}
       else null end)}) as $skills
@@ -234,18 +324,19 @@ render_markdown() {
     def signed: if . > 0 then "+\(.)" elif . < 0 then "−\(-.)" else "±0" end;
     def cell($key): .current[$key] as $value
       | if .base_status == "new" then "\($value) (new)"
+        elif .base_status == "deleted" then "0 (\(.delta[$key] | signed))"
         elif .delta != null and .delta[$key] != 0 then "\($value) (\(.delta[$key] | signed))"
         else "\($value)" end;
     def escape: gsub("\\|"; "\\|");
     "### Skill budget",
     "",
     "Token counts are estimates (characters ÷ 4). Limits per SKILL.md: \(.limits.max_skill_tokens) tokens and \(.limits.max_skill_lines) lines."
-      + (if .base != null and (.skills | any(.base_status == "found" or .base_status == "new"))
+      + (if .base != null and (.skills | any(.base_status == "found" or .base_status == "new" or .base_status == "deleted"))
          then " Changes are against `\(.base[0:12])`." else "" end),
     "",
     "| Skill | SKILL.md tokens | SKILL.md lines | Directory tokens | Description tokens | Status |",
     "|-------|-----------------|----------------|------------------|--------------------|--------|",
-    (.skills[] | "| `\(.path | escape)` | \(cell("skill_md_tokens")) | \(cell("skill_md_lines")) | \(cell("directory_tokens")) | \(cell("description_tokens")) | \(if (.breaches | length) > 0 then "❌ Over budget" else "✅" end) |"),
+    (.skills[] | "| `\(.path | escape)` | \(cell("skill_md_tokens")) | \(cell("skill_md_lines")) | \(cell("directory_tokens")) | \(cell("description_tokens")) | \(if .base_status == "deleted" then "🗑️ Deleted" elif (.breaches | length) > 0 then "❌ Over budget" else "✅" end) |"),
     "",
     "**All descriptions:** \(.description_tokens.current) tokens"
       + (if .description_tokens.delta != null and .description_tokens.delta != 0
@@ -256,6 +347,16 @@ render_markdown() {
        (.skills[] | . as $s | .breaches[] | "- ❌ `\($s.path | escape)`: \(.)")
      else empty end)
   ' "$1"
+}
+
+# Prints the login of the GITHUB_TOKEN or token owner. Installation tokens
+# cannot read /user, so fall back to the Actions bot that GITHUB_TOKEN posts as.
+token_login() {
+  local login
+  login=$(gh api graphql -f query='{ viewer { login } }' --jq .data.viewer.login 2>/dev/null) \
+    || login=$(gh api user --jq .login 2>/dev/null) \
+    || login=""
+  printf '%s' "${login:-github-actions[bot]}"
 }
 
 comment() {
@@ -288,14 +389,20 @@ comment() {
     exit 1
   fi
 
-  local repo="$GITHUB_REPOSITORY" existing errors
+  local repo="$GITHUB_REPOSITORY" existing errors comments login
   errors=$(mktemp)
-  if ! existing=$(gh api --paginate "repos/$repo/issues/$pr/comments" \
-      --jq ".[] | select(.body | startswith(\"$marker\")) | .id" 2>"$errors"); then
+  login=$(token_login)
+  echo "Looking for a budget comment by $login."
+  if ! comments=$(gh api --paginate "repos/$repo/issues/$pr/comments" 2>"$errors"); then
     comment_failed "$errors" "read comments"
     return 0
   fi
-  existing="${existing%%$'\n'*}"
+  # Only a comment this token wrote: another workflow or person can use the
+  # same marker, and their comment must not be overwritten.
+  existing=$(printf '%s' "$comments" | jq -r -s --arg marker "$marker" --arg login "$login" '
+    def bare: sub("\\[bot\\]$"; "");
+    add // [] | map(select((.user.login | bare) == ($login | bare) and (.body | startswith($marker))))
+    | .[0].id // empty')
 
   local body
   if [ "$(jq -r '.changed' "$report")" = "true" ]; then
@@ -310,12 +417,14 @@ comment() {
   if [ -n "$existing" ]; then
     if gh api -X PATCH "repos/$repo/issues/comments/$existing" -f body="$body" >/dev/null 2>"$errors"; then
       echo "Updated budget comment $existing."
+      write_output comment-id "$existing"
     else
       comment_failed "$errors" "update the comment"
     fi
   else
-    if gh api -X POST "repos/$repo/issues/$pr/comments" -f body="$body" >/dev/null 2>"$errors"; then
-      echo "Posted budget comment."
+    if existing=$(gh api -X POST "repos/$repo/issues/$pr/comments" -f body="$body" --jq .id 2>"$errors"); then
+      echo "Posted budget comment $existing."
+      write_output comment-id "$existing"
     else
       comment_failed "$errors" "post the comment"
     fi

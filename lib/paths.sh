@@ -2,7 +2,7 @@
 # Shared resolution of the 'paths' input of the skill actions. Source it:
 #
 #   source "$GITHUB_ACTION_PATH/../lib/paths.sh"
-#   resolve_paths "$INPUT_PATHS" "$targets_file" "skill plugin"
+#   resolve_paths "$INPUT_PATHS" "$targets_file" "skill plugin" [unmatched_file]
 #
 # Each nonblank, trimmed line of the input is a directory or a single-level
 # glob pattern:
@@ -55,9 +55,10 @@ paths_classify() {
 }
 
 # Arguments: paths input, targets file, accepted types ("skill plugin" or
-# "skill").
+# "skill"), and optionally a file that collects glob patterns matching nothing
+# instead of failing on them.
 resolve_paths() {
-  local input="$1" targets="$2" accepted="$3"
+  local input="$1" targets="$2" accepted="$3" unmatched="${4:-}"
   local noun="skill or AI-tool plugin" markers="$PATHS_SKILL_MARKER or $PATHS_PLUGIN_MARKER"
   if [ "$accepted" = "skill" ]; then
     noun="skill"
@@ -131,8 +132,12 @@ resolve_paths() {
       printf '%s\t%s\n' "$type" "$path" >> "$targets"
     done
     if [ "$matched" -eq 0 ] && [[ "$entry" == *[*?[]* ]]; then
-      echo "::error::The pattern '$entry' matched no $noun directories."
-      failed=true
+      if [ -n "$unmatched" ]; then
+        printf '%s\n' "$entry" >> "$unmatched"
+      else
+        echo "::error::The pattern '$entry' matched no $noun directories."
+        failed=true
+      fi
     fi
   done <<< "$input"
 
