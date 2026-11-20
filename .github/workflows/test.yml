@@ -1277,6 +1277,31 @@ jobs:
             exit 1
           fi
 
+      - name: Copy skills to a root whose name contains glob characters
+        id: literal-root
+        run: |
+          ROOT="$RUNNER_TEMP/skills[old]"
+          mkdir -p "$ROOT"
+          cp -R "$FIXTURES/skills/alpha" "$ROOT/"
+          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+
+      - name: Validate and build from that root literally
+        id: literal
+        uses: ./skills-publish
+        with:
+          root: ${{ steps.literal-root.outputs.root }}
+          registry-prefix: ${{ env.SKILLS_PREFIX }}
+          tags: literal-root
+
+      - name: Verify the literal root was published
+        env:
+          REFERENCES: ${{ steps.literal.outputs.references }}
+        run: |
+          if [ "$REFERENCES" != "$SKILLS_PREFIX/alpha:literal-root" ]; then
+            echo "Error: unexpected references: $REFERENCES"
+            exit 1
+          fi
+
       - name: Refuse an invalid skill before building
         id: invalid-skill
         continue-on-error: true

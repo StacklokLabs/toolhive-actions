@@ -7,6 +7,8 @@
 #     to validate and writes them to a new work directory. Outputs: work-dir.
 #
 #   bash "$GITHUB_ACTION_PATH/validate.sh" validate
+#     WORK_DIR/targets.tsv lists "<skill|plugin>\t<path>" lines; skills-publish
+#     writes this file itself to validate the directories it discovered.
 #     Reads WORK_DIR, INPUT_FAIL_ON_WARNINGS and TOOLHIVE_API_URL, validates
 #     every resolved directory, emits annotations and a step summary, and
 #     writes report.json to WORK_DIR. Outputs: valid, report-file,

@@ -46,16 +46,16 @@ Builds are reproducible: an unchanged skill gets the same digest under every tag
 
 | Output | Description |
 |--------|-------------|
-| `references` | Newline-delimited references that were pushed, or built when `push` is `'false'` |
+| `references` | Newline-delimited references that were pushed and signed, or built when `push` is `'false'` |
 | `references-json` | JSON object mapping each directory name to its references in `references`, for example `{"deploy": ["ghcr.io/org/repo/skills/deploy:v1.2.0", …]}` |
 
 ## When a push fails
 
-Registries have no transactions, so a push can fail after earlier references were published. The action:
-- stops at the first failed push and names it in an error,
-- lists in the outputs and the step summary only the references that were actually pushed.
+Registries have no transactions, so a push can fail after earlier references were published. The action stops at the first failed push and names it in an error. The outputs list only references that were pushed **and signed**.
 
-Rerun the job to publish the rest. Builds are reproducible, so references already pushed are republished with the same digest.
+ToolHive uploads a reference before it signs it. If signing fails, for example because the signing service is unreachable, the failed tag may already be in the registry **without a signature**. The step summary marks that reference. Consumers that verify signatures reject it, but anyone who pulls the tag without verifying gets unsigned content.
+
+To recover, rerun the job. Builds are reproducible, so every reference is pushed again with the same digest and signed. If you can't rerun soon, delete the failed tag from the registry.
 
 ## Examples
 
