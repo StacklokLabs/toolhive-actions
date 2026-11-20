@@ -19,7 +19,7 @@ non-paths are skipped too: `release/v0.11.1`, `release/vX.Y.Z`,
 `broken-path/SKILL.md` is a sibling skill.
 
 Build with `task build`, test with `task t` or `FOO=1 task test`, serve the
-docs with `task docs:serve`, and use `task remote:anything` or
+docs with `task docs:serve` or `task docs`, lint with `task lint`, and use `task remote:anything` or
 `task release:v1.2.0`. `task --dir other missing` uses another Taskfile.
 
 ```bash

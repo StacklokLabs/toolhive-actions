@@ -1832,17 +1832,45 @@ jobs:
             jq -c '[.findings[] | [(.file | split("/skills/") | last), .line, .rule, .reference]]' "$1"
           }
           jq . "$DEFAULT_REPORT"
-          EXPECTED='[["broken-path/SKILL.md",8,"path-unresolved","references/missing.md"],["broken-path/SKILL.md",8,"path-unresolved","scripts/missing.sh"],["missing-task/SKILL.md",9,"task-unknown","task deploy"],["missing-task/SKILL.md",12,"task-unknown","task docs:missing"],["missing-workflow/SKILL.md",8,"workflow-unknown","gh workflow run missing.yml"],["missing-workflow/SKILL.md",11,"workflow-unknown",".github/workflows/missing.yml"]]'
-          [ "$DEFAULT_FINDINGS" = "6" ] || fail "findings is '$DEFAULT_FINDINGS', expected 6"
+          EXPECTED='[["broken-path/SKILL.md",8,"path-unresolved","references/missing.md"],["broken-path/SKILL.md",8,"path-unresolved","scripts/missing.sh"],["missing-task/SKILL.md",9,"task-unknown","task deploy"],["missing-task/SKILL.md",12,"task-unknown","task docs:missing"],["missing-task/SKILL.md",13,"task-unknown","task tools"],["missing-task/SKILL.md",13,"task-unknown","task tools:lint"],["missing-workflow/SKILL.md",8,"workflow-unknown","gh workflow run missing.yml"],["missing-workflow/SKILL.md",11,"workflow-unknown",".github/workflows/missing.yml"]]'
+          [ "$DEFAULT_FINDINGS" = "8" ] || fail "findings is '$DEFAULT_FINDINGS', expected 8"
           [ "$(summarize "$DEFAULT_REPORT")" = "$EXPECTED" ] || fail "unexpected findings: $(summarize "$DEFAULT_REPORT")"
 
           # The allowlist is what suppresses the allowlisted skill's findings.
           ALLOWLISTED='[["allowlisted/SKILL.md",8,"path-unresolved","generated/schema.json"],["allowlisted/SKILL.md",8,"task-unknown","task gen-client"],["allowlisted/SKILL.md",9,"workflow-unknown","gh workflow run deploy-prod.yml"]]'
-          [ "$EMPTY_FINDINGS" = "9" ] || fail "findings without allowlist is '$EMPTY_FINDINGS', expected 9"
+          [ "$EMPTY_FINDINGS" = "11" ] || fail "findings without allowlist is '$EMPTY_FINDINGS', expected 11"
           [ "$(summarize "$EMPTY_REPORT")" = "$(jq -c -n --argjson a "$ALLOWLISTED" --argjson b "$EXPECTED" '$a + $b')" ] \
             || fail "unexpected findings without allowlist: $(summarize "$EMPTY_REPORT")"
 
           [ "$CLEAN_FINDINGS" = "0" ] || fail "clean-skill has $CLEAN_FINDINGS findings"
+
+      - name: Copy skills with CRLF line endings and a symlinked skill
+        id: variants
+        run: |
+          DIR="$RUNNER_TEMP/refs-variants/skills"
+          mkdir -p "$DIR/missing-workflow"
+          awk '{ printf "%s\r\n", $0 }' "$REPO/skills/missing-workflow/SKILL.md" > "$DIR/missing-workflow/SKILL.md"
+          ln -s "$GITHUB_WORKSPACE/$REPO/skills/broken-path" "$DIR/linked"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Check CRLF and symlinked skills
+        id: variant-check
+        uses: ./skill-refs
+        with:
+          paths: ${{ steps.variants.outputs.dir }}/*
+          repo-root: ${{ env.REPO }}
+
+      - name: Verify CRLF and symlinked skills are scanned
+        env:
+          REPORT: ${{ steps.variant-check.outputs.report-file }}
+        run: |
+          jq . "$REPORT"
+          ACTUAL=$(jq -c '[.findings[] | [(.file | split("/skills/") | last), .line, .rule]]' "$REPORT")
+          EXPECTED='[["linked/SKILL.md",8,"path-unresolved"],["linked/SKILL.md",8,"path-unresolved"],["missing-workflow/SKILL.md",8,"workflow-unknown"],["missing-workflow/SKILL.md",11,"workflow-unknown"]]'
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "Error: unexpected findings: $ACTUAL"
+            exit 1
+          fi
 
       - name: Fail on findings when fail is set
         id: fail-findings

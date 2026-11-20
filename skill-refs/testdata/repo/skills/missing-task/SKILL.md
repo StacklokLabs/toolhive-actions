@@ -9,4 +9,5 @@ description: Fixture skill that runs tasks the Taskfile does not define.
 task build && task deploy
 ```
 
-Preview with `task docs:missing`.
+Preview with `task docs:missing`. A flattened include has no namespace, so
+`task tools:lint` and `task tools` do not exist either.
