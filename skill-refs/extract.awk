@@ -116,6 +116,10 @@ function scan_spans(text, line,    i, n, run, j, closing, span, k) {
   }
 }
 
+# Markdown with CRLF line endings: drop the carriage return first, or fences
+# and their languages are not recognized.
+{ sub(/\r$/, "") }
+
 FNR == 1 {
   reset_file()
   if ($0 ~ /^---[ \t]*$/) { in_frontmatter = 1; next }

@@ -8,9 +8,9 @@ The action needs no ToolHive installation: it reads files with `awk`, `jq` and `
 
 ## What is checked
 
-The action reads only code: inline code spans, and fenced blocks tagged `bash`, `sh`, `shell`, `zsh` or `console` or left untagged. Prose, frontmatter and fences in other languages are skipped. In `console` fences, only lines starting with `$ ` are commands.
+The action reads only code: inline code spans, and fenced blocks tagged `bash`, `sh`, `shell`, `zsh` or `console` or left untagged. Files with CRLF line endings are read the same way. Prose, frontmatter and fences in other languages are skipped. In `console` fences, only lines starting with `$ ` are commands.
 
-It scans `SKILL.md` and every other `*.md` file in each skill, except files under `assets/`, which hold templates and examples rather than references.
+It scans `SKILL.md` and every other `*.md` file in each skill, except files under `assets/`, which hold templates and examples rather than references. A symlinked skill directory is followed.
 
 | Rule | Finding |
 |------|---------|
@@ -39,10 +39,10 @@ The following are skipped:
 
 The root Taskfile (`Taskfile.yml`, `Taskfile.yaml`, `Taskfile.dist.yml`, … in `repo-root`) is read with `yq`, never run. The action collects:
 - the root Taskfile's tasks and their aliases, with wildcard tasks such as `release:*` matching as patterns;
-- tasks from local `includes` one level deep, as `<namespace>:<task>`, also under namespace aliases and without a prefix when `flatten: true`.
+- tasks from local `includes` one level deep, resolved as Task does: as `<namespace>:<task>` and under namespace aliases, with an included `default` task also running as the bare `<namespace>`; with `flatten: true`, only as `<task>`.
 
 Some invocations are never flagged:
-- tasks in a remote, templated or missing include, because they can't be resolved;
+- tasks in a remote, templated or missing include, because they can't be resolved; when such an include is flattened, no `task` target is checked;
 - `task --dir …` and `task --taskfile …`, which use another Taskfile.
 
 Without a Taskfile, `task` isn't checked.

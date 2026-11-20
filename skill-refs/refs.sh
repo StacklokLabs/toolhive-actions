@@ -40,6 +40,7 @@ KNOWN_TASKS=""
 UNKNOWN_NAMESPACES=""
 KNOWN_WORKFLOWS=""
 HAS_TASKFILE=false
+UNKNOWN_FLAT=false
 
 contains_line() {
   [[ $'\n'"$2"$'\n' == *$'\n'"$1"$'\n'* ]]
@@ -89,7 +90,7 @@ taskfile_tasks() {
 }
 
 load_taskfile() {
-  local repo_root="$1" taskfile namespace target include_dir included aliases alias task flatten
+  local repo_root="$1" taskfile namespace target include_dir included aliases alias task flatten prefix
   taskfile=$(find_taskfile "$repo_root") || return 0
   HAS_TASKFILE=true
   KNOWN_TASKS=$(taskfile_tasks "$taskfile")
@@ -107,6 +108,11 @@ load_taskfile() {
         included="$target"
       fi
     fi
+    if [ -z "$included" ] && [ "$flatten" = "true" ]; then
+      # A flattened include that cannot be read may define any task name.
+      UNKNOWN_FLAT=true
+      continue
+    fi
     if [ -z "$included" ]; then
       # Remote, templated or missing: any task in this namespace may exist.
       UNKNOWN_NAMESPACES="${UNKNOWN_NAMESPACES}${namespace}"$'\n'
@@ -115,15 +121,22 @@ load_taskfile() {
       done
       continue
     fi
+    # As Task resolves them: a flattened include adds its tasks without a
+    # namespace, and its namespace is not a valid prefix. Otherwise tasks are
+    # <namespace>:<task> (also under namespace aliases), and an included
+    # default task also runs as the bare namespace.
     while IFS= read -r task; do
       [ -z "$task" ] && continue
-      KNOWN_TASKS="${KNOWN_TASKS}"$'\n'"${namespace}:${task}"
-      for alias in $aliases; do
-        KNOWN_TASKS="${KNOWN_TASKS}"$'\n'"${alias}:${task}"
-      done
       if [ "$flatten" = "true" ]; then
         KNOWN_TASKS="${KNOWN_TASKS}"$'\n'"${task}"
+        continue
       fi
+      for prefix in $namespace $aliases; do
+        KNOWN_TASKS="${KNOWN_TASKS}"$'\n'"${prefix}:${task}"
+        if [ "$task" = "default" ]; then
+          KNOWN_TASKS="${KNOWN_TASKS}"$'\n'"${prefix}"
+        fi
+      done
     done <<< "$(taskfile_tasks "$included")"
   done <<< "$(yq '(.includes // {}) | to_entries | .[] |
       [.key,
@@ -220,6 +233,7 @@ check_task() {
   local file="$1" line="$2"
   shift 2
   [ "$HAS_TASKFILE" = true ] || return 0
+  [ "$UNKNOWN_FLAT" = true ] && return 0
   local word skip_next=false target namespace known
   for word in "$@"; do
     if $skip_next; then skip_next=false; continue; fi
@@ -288,7 +302,8 @@ scan_skill() {
   local file kind line text
   while IFS= read -r -d '' file; do
     files+=("$file")
-  done < <(find "$skill" -type f -name '*.md' -not -path "$skill/assets/*" -print0 | sort -z)
+  # -H follows a symlinked skill directory itself.
+  done < <(find -H "$skill" -type f -name '*.md' -not -path "$skill/assets/*" -print0 | sort -z)
   [ "${#files[@]}" -eq 0 ] && return 0
 
   while IFS=$'\t' read -r kind file line text; do

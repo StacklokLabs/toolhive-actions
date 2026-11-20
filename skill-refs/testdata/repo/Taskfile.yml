@@ -2,6 +2,9 @@ version: '3'
 
 includes:
   docs: ./docs
+  tools:
+    taskfile: ./tools
+    flatten: true
   remote:
     taskfile: https://example.com/Taskfile.yml
 
