@@ -2403,6 +2403,29 @@ jobs:
             exit 1
           fi
 
+      - name: Fail when a Markdown file cannot be read
+        run: |
+          # A scanner error must fail the check, not look like a clean scan.
+          if [ "$(id -u)" = 0 ]; then
+            echo "Running as root, which can read any file; skipping."
+            exit 0
+          fi
+          DIR="$(mktemp -d)/skills/unreadable"
+          mkdir -p "$DIR"
+          cp "$REPO/skills/missing-workflow/SKILL.md" "$DIR/"
+          echo '# Notes' > "$DIR/A-notes.md"
+          chmod 000 "$DIR/A-notes.md"
+          OUT=$(mktemp)
+          if INPUT_PATHS="$DIR" INPUT_REPO_ROOT="$REPO" INPUT_FAIL=true GITHUB_OUTPUT="$OUT" \
+            bash skill-refs/refs.sh; then
+            echo "Error: the check passed although a file could not be read"
+            exit 1
+          fi
+          if grep -q '^findings=' "$OUT"; then
+            echo "Error: the check reported findings although a file could not be read"
+            exit 1
+          fi
+
       - name: Fail on findings when fail is set
         id: fail-findings
         continue-on-error: true
