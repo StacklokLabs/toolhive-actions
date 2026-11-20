@@ -158,6 +158,7 @@ load_workflows() {
   done
 }
 
+WORK_DIR=""
 FINDINGS_FILE=""
 add_finding() {
   # file, line, rule, reference, message
@@ -299,13 +300,25 @@ check_workflow() {
 scan_skill() {
   local skill="$1" repo_root="$2" skill_from_root="$3"
   local -a files=() words
-  local file kind line text
+  local file kind line text list records
+  # Lists and records go through files, not process substitution, so a
+  # failing find or awk fails the step instead of looking like a clean scan.
+  list="$WORK_DIR/files"
+  records="$WORK_DIR/records.tsv"
+  # -H follows a symlinked skill directory itself.
+  if ! find -H "$skill" -type f -name '*.md' -not -path "$skill/assets/*" -print0 | sort -z > "$list"; then
+    echo "::error::Could not list the Markdown files of $skill."
+    exit 1
+  fi
   while IFS= read -r -d '' file; do
     files+=("$file")
-  # -H follows a symlinked skill directory itself.
-  done < <(find -H "$skill" -type f -name '*.md' -not -path "$skill/assets/*" -print0 | sort -z)
+  done < "$list"
   [ "${#files[@]}" -eq 0 ] && return 0
 
+  if ! awk -f "$SCRIPT_DIR/extract.awk" "${files[@]}" > "$records"; then
+    echo "::error::Could not read the Markdown files of $skill."
+    exit 1
+  fi
   while IFS=$'\t' read -r kind file line text; do
     case "$kind" in
       P) check_path "$file" "$line" "$text" "$skill" "$repo_root" "$skill_from_root" ;;
@@ -324,7 +337,7 @@ scan_skill() {
         ;;
       W) check_workflow "$file" "$line" "${text##*/}" "$text" ;;
     esac
-  done < <(awk -f "$SCRIPT_DIR/extract.awk" "${files[@]}")
+  done < "$records"
 }
 
 main() {
@@ -362,6 +375,7 @@ main() {
   local temp_root work_dir targets
   temp_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
   work_dir=$(mktemp -d "${temp_root}/toolhive-skill-refs.XXXXXX")
+  WORK_DIR="$work_dir"
   targets="$work_dir/targets.tsv"
   FINDINGS_FILE="$work_dir/findings.tsv"
   : > "$targets"
