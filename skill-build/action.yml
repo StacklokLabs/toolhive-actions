@@ -83,61 +83,13 @@ runs:
     - name: Start ToolHive Daemon
       id: daemon
       shell: bash
-      run: |
-        # Check if a daemon is already reachable (e.g., started by run-mcp-server).
-        # Any HTTP response (even 503 when no container runtime is present) means the
-        # API server is up. Skill build/push package OCI artifacts and do not require
-        # a container runtime, so we must not gate readiness on the runtime's health.
-        EXISTING_URL="${TOOLHIVE_API_URL:-http://127.0.0.1:8080}"
-        if [ "$(curl -s -o /dev/null -w '%{http_code}' "${EXISTING_URL}/health" 2>/dev/null)" != "000" ]; then
-          echo "ToolHive daemon already running at $EXISTING_URL"
-          PORT=$(echo "$EXISTING_URL" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|')
-          echo "port=$PORT" >> "$GITHUB_OUTPUT"
-          echo "started=false" >> "$GITHUB_OUTPUT"
-          exit 0
-        fi
-
-        # Find an available port
-        PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("",0)); print(s.getsockname()[1]); s.close()' 2>/dev/null) || {
-          echo "::warning::python3 not available for port selection, falling back to 8080"
-          PORT=8080
-        }
-
-        echo "Starting thv serve on port $PORT..."
-        thv serve --host "127.0.0.1" --port "${PORT}" &
-        DAEMON_PID=$!
-        echo "pid=$DAEMON_PID" >> "$GITHUB_OUTPUT"
-        echo "port=$PORT" >> "$GITHUB_OUTPUT"
-        echo "started=true" >> "$GITHUB_OUTPUT"
-
-        # Wait for daemon to be ready
-        MAX_WAIT=30
-        ELAPSED=0
-        while [ $ELAPSED -lt $MAX_WAIT ]; do
-          if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
-            echo "::error::ToolHive daemon process exited unexpectedly"
-            wait "$DAEMON_PID" 2>/dev/null
-            exit 1
-          fi
-          if [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/health" 2>/dev/null)" != "000" ]; then
-            echo "ToolHive daemon is ready (port $PORT)"
-            break
-          fi
-          sleep 1
-          ELAPSED=$((ELAPSED + 1))
-        done
-
-        if [ $ELAPSED -ge $MAX_WAIT ]; then
-          echo "::error::ToolHive daemon failed to start within ${MAX_WAIT}s"
-          kill "$DAEMON_PID" 2>/dev/null || true
-          exit 1
-        fi
+      run: bash "$GITHUB_ACTION_PATH/../lib/daemon.sh" start
 
     - name: Build Skill
       id: build
       shell: bash
       env:
-        TOOLHIVE_API_URL: http://127.0.0.1:${{ steps.daemon.outputs.port }}
+        TOOLHIVE_API_URL: ${{ steps.daemon.outputs.url }}
         INPUT_PATH: ${{ inputs.path }}
         INPUT_TAG: ${{ inputs.tag }}
         INPUT_TAGS: ${{ inputs.tags }}
@@ -193,7 +145,7 @@ runs:
       if: inputs.push == 'true'
       shell: bash
       env:
-        TOOLHIVE_API_URL: http://127.0.0.1:${{ steps.daemon.outputs.port }}
+        TOOLHIVE_API_URL: ${{ steps.daemon.outputs.url }}
         REFERENCES: ${{ steps.build.outputs.references }}
       run: |
         while IFS= read -r REFERENCE || [ -n "$REFERENCE" ]; do
@@ -208,8 +160,5 @@ runs:
       shell: bash
       env:
         DAEMON_PID: ${{ steps.daemon.outputs.pid }}
-      run: |
-        if [ -n "$DAEMON_PID" ]; then
-          kill "$DAEMON_PID" 2>/dev/null || true
-          wait "$DAEMON_PID" 2>/dev/null || true
-        fi
+        DAEMON_STARTED: ${{ steps.daemon.outputs.started }}
+      run: bash "$GITHUB_ACTION_PATH/../lib/daemon.sh" stop

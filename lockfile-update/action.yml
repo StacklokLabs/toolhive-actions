@@ -102,55 +102,7 @@ runs:
     - name: Start ToolHive daemon
       id: daemon
       shell: bash
-      run: |
-        EXISTING_URL="${TOOLHIVE_API_URL:-http://127.0.0.1:8080}"
-        if [[ "$EXISTING_URL" == *$'\n'* || "$EXISTING_URL" == *$'\r'* ]]; then
-          echo "::error::TOOLHIVE_API_URL must not contain line breaks."
-          exit 1
-        fi
-
-        HTTP_CODE=$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' \
-          "${EXISTING_URL}/health" 2>/dev/null || true)
-        if [ "$HTTP_CODE" = "204" ] || [ "$HTTP_CODE" = "503" ]; then
-          echo "ToolHive daemon already running at $EXISTING_URL"
-          echo "url=$EXISTING_URL" >> "$GITHUB_OUTPUT"
-          echo "started=false" >> "$GITHUB_OUTPUT"
-          exit 0
-        fi
-
-        PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()' 2>/dev/null) || {
-          echo "::warning::python3 not available for port selection, falling back to 8080"
-          PORT=8080
-        }
-        DAEMON_URL="http://127.0.0.1:${PORT}"
-
-        echo "Starting thv serve on port $PORT..."
-        thv serve --host 127.0.0.1 --port "$PORT" &
-        DAEMON_PID=$!
-        echo "pid=$DAEMON_PID" >> "$GITHUB_OUTPUT"
-        echo "url=$DAEMON_URL" >> "$GITHUB_OUTPUT"
-        echo "started=true" >> "$GITHUB_OUTPUT"
-
-        for _ in $(seq 1 30); do
-          if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
-            echo "::error::ToolHive daemon process exited unexpectedly."
-            wait "$DAEMON_PID" 2>/dev/null || true
-            exit 1
-          fi
-
-          HTTP_CODE=$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' \
-            "${DAEMON_URL}/health" 2>/dev/null || true)
-          if [ "$HTTP_CODE" = "204" ] || [ "$HTTP_CODE" = "503" ]; then
-            echo "ToolHive daemon is ready at $DAEMON_URL"
-            exit 0
-          fi
-          sleep 1
-        done
-
-        echo "::error::ToolHive daemon failed to start within 30 seconds."
-        kill "$DAEMON_PID" 2>/dev/null || true
-        wait "$DAEMON_PID" 2>/dev/null || true
-        exit 1
+      run: bash "$GITHUB_ACTION_PATH/../lib/daemon.sh" start
 
     - name: Restore locked state
       shell: bash
@@ -373,8 +325,5 @@ runs:
       shell: bash
       env:
         DAEMON_PID: ${{ steps.daemon.outputs.pid }}
-      run: |
-        if [ -n "$DAEMON_PID" ]; then
-          kill "$DAEMON_PID" 2>/dev/null || true
-          wait "$DAEMON_PID" 2>/dev/null || true
-        fi
+        DAEMON_STARTED: ${{ steps.daemon.outputs.started }}
+      run: bash "$GITHUB_ACTION_PATH/../lib/daemon.sh" stop
