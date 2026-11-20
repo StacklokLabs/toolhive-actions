@@ -1132,6 +1132,237 @@ jobs:
           fi
           echo "All invalid inputs were rejected."
 
+  test-skills-publish-action:
+    name: Test Skills Publish Action
+    runs-on: ubuntu-latest
+    env:
+      FIXTURES: skills-publish/testdata
+      SKILLS_PREFIX: ghcr.io/stacklok/toolhive-actions-ci/skills
+      PLUGINS_PREFIX: ghcr.io/stacklok/toolhive-actions-ci/plugins
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install latest ToolHive
+        uses: ./install
+        with:
+          version: latest
+
+      - name: Build every skill and plugin
+        id: publish
+        uses: ./skills-publish
+        with:
+          root: ${{ env.FIXTURES }}/skills/
+          plugins-root: ${{ env.FIXTURES }}/plugins
+          registry-prefix: ${{ env.SKILLS_PREFIX }}
+          plugins-registry-prefix: ${{ env.PLUGINS_PREFIX }}
+          tags: "  v0.0.1-ci  \n\n\tlatest\n"
+
+      - name: Verify outputs
+        env:
+          REFERENCES: ${{ steps.publish.outputs.references }}
+          REFERENCES_JSON: ${{ steps.publish.outputs.references-json }}
+          EXPECTED_REFERENCES: |-
+            ghcr.io/stacklok/toolhive-actions-ci/skills/alpha:v0.0.1-ci
+            ghcr.io/stacklok/toolhive-actions-ci/skills/alpha:latest
+            ghcr.io/stacklok/toolhive-actions-ci/skills/beta:v0.0.1-ci
+            ghcr.io/stacklok/toolhive-actions-ci/skills/beta:latest
+            ghcr.io/stacklok/toolhive-actions-ci/plugins/gamma:v0.0.1-ci
+            ghcr.io/stacklok/toolhive-actions-ci/plugins/gamma:latest
+        run: |
+          printf '%s\n' "$REFERENCES"
+          printf '%s\n' "$REFERENCES_JSON" | jq .
+          if [ "$REFERENCES" != "$EXPECTED_REFERENCES" ]; then
+            echo "Error: references output does not match"
+            exit 1
+          fi
+          if ! printf '%s' "$REFERENCES_JSON" | jq -e --arg skills "$SKILLS_PREFIX" --arg plugins "$PLUGINS_PREFIX" '. == {
+              alpha: ["\($skills)/alpha:v0.0.1-ci", "\($skills)/alpha:latest"],
+              beta: ["\($skills)/beta:v0.0.1-ci", "\($skills)/beta:latest"],
+              gamma: ["\($plugins)/gamma:v0.0.1-ci", "\($plugins)/gamma:latest"]}' >/dev/null; then
+            echo "Error: references-json output does not match"
+            exit 1
+          fi
+          if pgrep -f '[t]hv serve' >/dev/null; then
+            echo "Error: skills-publish did not stop its daemon"
+            exit 1
+          fi
+
+      - name: Copy skills to a root whose name contains glob characters
+        id: literal-root
+        run: |
+          ROOT="$RUNNER_TEMP/skills[old]"
+          mkdir -p "$ROOT"
+          cp -R "$FIXTURES/skills/alpha" "$ROOT/"
+          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+
+      - name: Validate and build from that root literally
+        id: literal
+        uses: ./skills-publish
+        with:
+          root: ${{ steps.literal-root.outputs.root }}
+          registry-prefix: ${{ env.SKILLS_PREFIX }}
+          tags: literal-root
+
+      - name: Verify the literal root was published
+        env:
+          REFERENCES: ${{ steps.literal.outputs.references }}
+        run: |
+          if [ "$REFERENCES" != "$SKILLS_PREFIX/alpha:literal-root" ]; then
+            echo "Error: unexpected references: $REFERENCES"
+            exit 1
+          fi
+
+      - name: Refuse an invalid skill before building
+        id: invalid-skill
+        continue-on-error: true
+        uses: ./skills-publish
+        with:
+          root: ${{ env.FIXTURES }}/invalid-skills
+          registry-prefix: ${{ env.SKILLS_PREFIX }}
+          tags: must-not-build
+
+      - name: Refuse a skill and plugin publishing to the same repository
+        id: collision
+        continue-on-error: true
+        uses: ./skills-publish
+        with:
+          root: ${{ env.FIXTURES }}/skills
+          plugins-root: ${{ env.FIXTURES }}/collision-plugins
+          registry-prefix: ${{ env.SKILLS_PREFIX }}
+          tags: must-not-build
+
+      - name: Refuse to push without a trusted event and OIDC token
+        id: push-refused
+        continue-on-error: true
+        uses: ./skills-publish
+        with:
+          root: ${{ env.FIXTURES }}/skills
+          registry-prefix: ${{ env.SKILLS_PREFIX }}
+          tags: must-not-build
+          push: 'true'
+
+      - name: Reject uppercase registry prefix
+        id: uppercase-prefix
+        continue-on-error: true
+        uses: ./skills-publish
+        with:
+          root: ${{ env.FIXTURES }}/skills
+          registry-prefix: ghcr.io/StackLok/skills
+          tags: must-not-build
+
+      - name: Reject registry prefix with a tag
+        id: tagged-prefix
+        continue-on-error: true
+        uses: ./skills-publish
+        with:
+          root: ${{ env.FIXTURES }}/skills
+          registry-prefix: ${{ env.SKILLS_PREFIX }}:v1
+          tags: must-not-build
+
+      - name: Reject duplicate tags
+        id: duplicate-tags
+        continue-on-error: true
+        uses: ./skills-publish
+        with:
+          root: ${{ env.FIXTURES }}/skills
+          registry-prefix: ${{ env.SKILLS_PREFIX }}
+          tags: |
+            must-not-build
+            must-not-build
+
+      - name: Reject a full reference as a tag
+        id: reference-tag
+        continue-on-error: true
+        uses: ./skills-publish
+        with:
+          root: ${{ env.FIXTURES }}/skills
+          registry-prefix: ${{ env.SKILLS_PREFIX }}
+          tags: ${{ env.SKILLS_PREFIX }}/alpha:must-not-build
+
+      - name: Reject a root without skills
+        id: empty-root
+        continue-on-error: true
+        uses: ./skills-publish
+        with:
+          root: ${{ env.FIXTURES }}/plugins
+          registry-prefix: ${{ env.SKILLS_PREFIX }}
+          tags: must-not-build
+
+      - name: Reject an empty validate value
+        id: empty-validate
+        continue-on-error: true
+        uses: ./skills-publish
+        with:
+          root: ${{ env.FIXTURES }}/skills
+          registry-prefix: ${{ env.SKILLS_PREFIX }}
+          tags: must-not-build
+          # An unset repository variable expands to an empty string.
+          validate: ${{ vars.TOOLHIVE_ACTIONS_UNSET_VARIABLE }}
+
+      - name: Reject invalid push value
+        id: bad-push
+        continue-on-error: true
+        uses: ./skills-publish
+        with:
+          root: ${{ env.FIXTURES }}/skills
+          registry-prefix: ${{ env.SKILLS_PREFIX }}
+          tags: must-not-build
+          push: 'TRUE'
+
+      - name: Verify refused runs
+        env:
+          OUTCOMES: >-
+            invalid-skill=${{ steps.invalid-skill.outcome }}
+            collision=${{ steps.collision.outcome }}
+            push-refused=${{ steps.push-refused.outcome }}
+            uppercase-prefix=${{ steps.uppercase-prefix.outcome }}
+            tagged-prefix=${{ steps.tagged-prefix.outcome }}
+            duplicate-tags=${{ steps.duplicate-tags.outcome }}
+            reference-tag=${{ steps.reference-tag.outcome }}
+            empty-root=${{ steps.empty-root.outcome }}
+            bad-push=${{ steps.bad-push.outcome }}
+            empty-validate=${{ steps.empty-validate.outcome }}
+        run: |
+          FAILED=false
+          for ENTRY in $OUTCOMES; do
+            if [ "${ENTRY#*=}" != "failure" ]; then
+              echo "Error: ${ENTRY%%=*} was not refused (outcome: ${ENTRY#*=})"
+              FAILED=true
+            fi
+          done
+          $FAILED && exit 1
+          echo "All invalid runs were refused."
+
+      - name: Start ToolHive Daemon for Build Listing Checks
+        id: daemon
+        run: bash ./lib/daemon.sh start
+
+      - name: Verify builds, and that refused runs built nothing
+        env:
+          TOOLHIVE_API_URL: ${{ steps.daemon.outputs.url }}
+          EXPECTED_REFERENCES: ${{ steps.publish.outputs.references }}
+        run: |
+          BUILDS="$(thv skill builds --format json) $(thv ai-plugin builds --format json)"
+          printf '%s\n' "$BUILDS"
+          while IFS= read -r REFERENCE; do
+            if ! printf '%s' "$BUILDS" | grep -Fq "\"$REFERENCE\""; then
+              echo "Error: build not found locally: $REFERENCE"
+              exit 1
+            fi
+          done <<< "$EXPECTED_REFERENCES"
+          if printf '%s' "$BUILDS" | grep -Fq 'must-not-build'; then
+            echo "Error: a refused run built an artifact"
+            exit 1
+          fi
+
+      - name: Stop ToolHive Daemon
+        if: always() && steps.daemon.outputs.started == 'true'
+        env:
+          DAEMON_PID: ${{ steps.daemon.outputs.pid }}
+          DAEMON_STARTED: ${{ steps.daemon.outputs.started }}
+        run: bash ./lib/daemon.sh stop
+
   lint-shell:
     name: Lint Shared Shell Scripts
     runs-on: ubuntu-latest
@@ -1146,7 +1377,7 @@ jobs:
             sudo apt-get update -q && sudo apt-get install -y -q shellcheck
           fi
           shellcheck --version
-          shellcheck lib/*.sh skill-validate/*.sh
+          shellcheck lib/*.sh skill-validate/*.sh skills-publish/*.sh
 
   validate-action-metadata:
     name: Validate Action Metadata
@@ -1205,3 +1436,9 @@ jobs:
           echo "Validating skill-validate/action.yml..."
           yq eval '.' skill-validate/action.yml > /dev/null
           echo "✓ skill-validate/action.yml is valid"
+
+      - name: Validate skills-publish/action.yml
+        run: |
+          echo "Validating skills-publish/action.yml..."
+          yq eval '.' skills-publish/action.yml > /dev/null
+          echo "✓ skills-publish/action.yml is valid"

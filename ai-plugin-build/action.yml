@@ -104,28 +104,14 @@ runs:
           [ -n "$TAG_REFERENCE" ] && TAG_REFERENCES+=("$TAG_REFERENCE")
         done <<< "$INPUT_TAGS"
 
+        # Command substitution, not process substitution, so a failed build
+        # fails this step.
+        BUILT=$(bash "$GITHUB_ACTION_PATH/../lib/build.sh" build ai-plugin "$INPUT_PATH" \
+          ${TAG_REFERENCES[@]+"${TAG_REFERENCES[@]}"})
         BUILT_REFERENCES=()
-        if [ "${#TAG_REFERENCES[@]}" -eq 0 ]; then
-          echo "Building AI-tool plugin from $INPUT_PATH..."
-          REFERENCE=$(thv ai-plugin build "$INPUT_PATH" | tail -n 1)
-          if [ -z "$REFERENCE" ]; then
-            echo "::error::AI-tool plugin build returned an empty reference."
-            exit 1
-          fi
+        while IFS= read -r REFERENCE; do
           BUILT_REFERENCES+=("$REFERENCE")
-          echo "Built AI-tool plugin: $REFERENCE"
-        else
-          for TAG_REFERENCE in "${TAG_REFERENCES[@]}"; do
-            echo "Building AI-tool plugin from $INPUT_PATH..."
-            REFERENCE=$(thv ai-plugin build "$INPUT_PATH" --tag "$TAG_REFERENCE" | tail -n 1)
-            if [ -z "$REFERENCE" ]; then
-              echo "::error::AI-tool plugin build returned an empty reference."
-              exit 1
-            fi
-            BUILT_REFERENCES+=("$REFERENCE")
-            echo "Built AI-tool plugin: $REFERENCE"
-          done
-        fi
+        done <<< "$BUILT"
 
         write_multiline_output() {
           local NAME="$1"
@@ -151,12 +137,11 @@ runs:
         TOOLHIVE_API_URL: ${{ steps.daemon.outputs.url }}
         REFERENCES: ${{ steps.build.outputs.references }}
       run: |
+        PUSH_REFERENCES=()
         while IFS= read -r REFERENCE || [ -n "$REFERENCE" ]; do
-          [ -z "$REFERENCE" ] && continue
-          echo "Pushing $REFERENCE..."
-          thv ai-plugin push "$REFERENCE"
-          echo "Pushed AI-tool plugin: $REFERENCE"
+          [ -n "$REFERENCE" ] && PUSH_REFERENCES+=("$REFERENCE")
         done <<< "$REFERENCES"
+        bash "$GITHUB_ACTION_PATH/../lib/build.sh" push ai-plugin "${PUSH_REFERENCES[@]}"
 
     - name: Stop ToolHive Daemon
       if: always() && steps.daemon.outputs.started == 'true'

@@ -126,6 +126,14 @@ line, writes a summary table and a JSON report, and can fail on warnings.
 
 [📖 Full Documentation](./skill-validate/README.md)
 
+### 9. `skills-publish` - Publish Every Skill and AI-Tool Plugin
+
+Validates, builds and optionally pushes every skill under a root, and every
+AI-tool plugin under a plugins root, with repository-wide tags. Pushing signs
+keylessly and is allowed only on trusted events.
+
+[📖 Full Documentation](./skills-publish/README.md)
+
 ## 📚 Examples
 
 ### Basic Installation and Usage
