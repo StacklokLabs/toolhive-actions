@@ -43,7 +43,7 @@ The action checks that the directory and manifest exist, then runs `thv ai-plugi
 | `tags` | Newline-delimited complete OCI references | No | ToolHive default |
 | `push` | Push every built artifact to its OCI registry; accepts exactly `'true'` or `'false'` | No | `false` |
 
-`tags` entries are trimmed, blank lines are ignored, input order is preserved, and duplicate trimmed references are rejected. With no nonblank references, the action builds once and uses ToolHive's default reference. With multiple references, it runs one build per reference; because these are separate builds, their digests are not guaranteed to match.
+`tags` entries are trimmed, blank lines are ignored, input order is preserved, and duplicate trimmed references are rejected. With no nonblank references, the action builds once and uses ToolHive's default reference. With multiple references, it runs one build per reference. Builds are reproducible, so every reference built from the same content has the same digest.
 
 ## Outputs
 
@@ -125,7 +125,7 @@ jobs:
           push: 'true'
 ```
 
-The action deliberately relies on ToolHive's signed push default and does not expose unsigned or signing configuration.
+The action deliberately relies on ToolHive's signed push default and does not expose unsigned or signing configuration. With `push: 'true'`, it fails before building when the job cannot request an OIDC token, instead of waiting for an interactive sign-in that cannot complete in CI.
 
 ## Platform Support
 

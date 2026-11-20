@@ -39,6 +39,7 @@ runs:
         INPUT_PATH: ${{ inputs.path }}
         INPUT_TAG: ${{ inputs.tag }}
         INPUT_TAGS: ${{ inputs.tags }}
+        INPUT_PUSH: ${{ inputs.push }}
       run: |
         if [ -n "$INPUT_TAG" ] && [ -n "$INPUT_TAGS" ]; then
           echo "::error::The 'tag' and 'tags' inputs cannot be used together."
@@ -80,10 +81,23 @@ runs:
           exit 1
         fi
 
+        # Pushing signs with the job's OIDC token; fail now rather than wait
+        # for an interactive sign-in.
+        if [ "$INPUT_PUSH" = "true" ]; then
+          bash "$GITHUB_ACTION_PATH/../lib/build.sh" require-oidc
+        fi
+
     - name: Start ToolHive Daemon
       id: daemon
       shell: bash
       run: bash "$GITHUB_ACTION_PATH/../lib/daemon.sh" start
+
+    - name: Validate Skill
+      shell: bash
+      env:
+        TOOLHIVE_API_URL: ${{ steps.daemon.outputs.url }}
+        INPUT_PATH: ${{ inputs.path }}
+      run: thv skill validate "$INPUT_PATH"
 
     - name: Build Skill
       id: build
