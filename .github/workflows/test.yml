@@ -1375,6 +1375,8 @@ jobs:
       # Same-repository pull requests can comment; forks and other events
       # check the skip path instead.
       CAN_COMMENT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+      # Unique per run, so concurrent runs never see each other's comments.
+      COMMENT_KEY: ci-selftest-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -1456,6 +1458,64 @@ jobs:
           paths: ${{ runner.temp }}/budget-repo/skills/small-skill
           base-ref: 0123456789abcdef0123456789abcdef01234567
 
+      - name: Create repositories with a deleted skill and a root skill
+        id: more-repos
+        env:
+          DELETED_REPO: ${{ runner.temp }}/budget-deleted
+          ROOT_REPO: ${{ runner.temp }}/budget-root
+        run: |
+          commit() {
+            git -C "$1" add -A
+            git -C "$1" -c user.name=ci -c user.email=ci@example.com commit -q -m "$2"
+          }
+          mkdir -p "$DELETED_REPO/skills/gone"
+          cp -R "$FIXTURES/small-skill" "$DELETED_REPO/skills/"
+          printf -- '---\nname: gone\ndescription: A skill that this change deletes.\n---\n# Gone\n' > "$DELETED_REPO/skills/gone/SKILL.md"
+          git -C "$DELETED_REPO" init -q
+          commit "$DELETED_REPO" base
+          echo "deleted-base=$(git -C "$DELETED_REPO" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          rm -rf "$DELETED_REPO/skills/gone"
+
+          mkdir -p "$ROOT_REPO"
+          cp "$FIXTURES/small-skill/SKILL.md" "$ROOT_REPO/"
+          git -C "$ROOT_REPO" init -q
+          commit "$ROOT_REPO" base
+          echo "root-base=$(git -C "$ROOT_REPO" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "More text here." >> "$ROOT_REPO/SKILL.md"
+
+      - name: Measure a deleted skill
+        id: deleted
+        uses: ./skill-budget
+        with:
+          paths: ${{ runner.temp }}/budget-deleted/skills/*
+          base-ref: ${{ steps.more-repos.outputs.deleted-base }}
+
+      - name: Measure a skill at the repository root
+        id: root
+        uses: ./skill-budget
+        with:
+          paths: ${{ runner.temp }}/budget-root
+          base-ref: ${{ steps.more-repos.outputs.root-base }}
+
+      - name: Verify deleted and root skills
+        env:
+          DELETED_REPORT: ${{ steps.deleted.outputs.report-file }}
+          DELETED_MARKDOWN: ${{ steps.deleted.outputs.report-markdown }}
+          ROOT_REPORT: ${{ steps.root.outputs.report-file }}
+        run: |
+          fail() { echo "Error: $*"; exit 1; }
+          jq . "$DELETED_REPORT" "$ROOT_REPORT"
+          jq -e '.skills | map({key: .name, value: {base_status, delta}}) | from_entries == {
+              gone: {base_status: "deleted", delta: {skill_md_tokens: -19, skill_md_lines: -5, directory_tokens: -19, description_tokens: -9}},
+              "small-skill": {base_status: "found", delta: {skill_md_tokens: 0, skill_md_lines: 0, directory_tokens: 0, description_tokens: 0}}}' \
+            "$DELETED_REPORT" >/dev/null || fail "unexpected deltas for a deleted skill"
+          jq -e '.description_tokens == {current: 22, delta: -9} and .changed' "$DELETED_REPORT" >/dev/null \
+            || fail "a deleted skill should lower the description total"
+          grep -Fq '| 0 (−19) | 0 (−5) | 0 (−19) | 0 (−9) | 🗑️ Deleted |' <<< "$DELETED_MARKDOWN" || fail "markdown row for the deleted skill is missing"
+          jq -e '.skills == [.skills[0]] and .skills[0].base_status == "found"
+              and .skills[0].delta == {skill_md_tokens: 4, skill_md_lines: 1, directory_tokens: 4, description_tokens: 0}' \
+            "$ROOT_REPORT" >/dev/null || fail "unexpected report for a root skill"
+
       - name: Verify deltas
         env:
           FAIL_OUTCOME: ${{ steps.fail-over-budget.outcome }}
@@ -1479,13 +1539,14 @@ jobs:
             "$MISSING_REPORT" >/dev/null || fail "a missing base should give no deltas"
 
       - name: Post the sticky comment
+        id: post
         if: env.CAN_COMMENT == 'true'
         uses: ./skill-budget
         with:
           paths: ${{ env.FIXTURES }}/over-budget
           base-ref: ''
           comment: 'true'
-          comment-key: ci-selftest
+          comment-key: ${{ env.COMMENT_KEY }}
 
       - name: Update the sticky comment
         id: comment
@@ -1494,16 +1555,22 @@ jobs:
           paths: ${{ env.FIXTURES }}/over-budget
           base-ref: ''
           comment: 'true'
-          comment-key: ci-selftest
+          comment-key: ${{ env.COMMENT_KEY }}
 
       - name: Verify exactly one sticky comment
         if: env.CAN_COMMENT == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
+          POSTED_ID: ${{ steps.post.outputs.comment-id }}
+          UPDATED_ID: ${{ steps.comment.outputs.comment-id }}
         run: |
-          COMMENTS=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
-            --jq '[.[] | select(.body | startswith("<!-- toolhive-skill-budget:ci-selftest -->"))]' | jq -s 'add')
+          if [ -z "$POSTED_ID" ] || [ "$POSTED_ID" != "$UPDATED_ID" ]; then
+            echo "Error: the second run did not update the posted comment (posted '$POSTED_ID', updated '$UPDATED_ID')"
+            exit 1
+          fi
+          COMMENTS=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" | jq -s --arg marker "<!-- toolhive-skill-budget:$COMMENT_KEY -->" \
+            'add // [] | map(select(.body | startswith($marker)))')
           printf '%s\n' "$COMMENTS" | jq '[.[] | {id, body: .body[0:200]}]'
           if [ "$(printf '%s' "$COMMENTS" | jq 'length')" != "1" ]; then
             echo "Error: expected exactly one sticky comment"
@@ -1518,11 +1585,11 @@ jobs:
         if: always() && env.CAN_COMMENT == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
+          POSTED_ID: ${{ steps.post.outputs.comment-id }}
+          UPDATED_ID: ${{ steps.comment.outputs.comment-id }}
         run: |
-          gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
-            --jq '.[] | select(.body | startswith("<!-- toolhive-skill-budget:ci-selftest -->")) | .id' \
-          | while IFS= read -r ID; do
+          # Only the comment this run created.
+          for ID in $(printf '%s\n%s\n' "$POSTED_ID" "$UPDATED_ID" | sort -u); do
             gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/comments/$ID"
             echo "Deleted comment $ID"
           done

@@ -48,6 +48,9 @@ outputs:
   over-budget:
     description: "'true' when a skill exceeds a limit"
     value: ${{ steps.measure.outputs.over-budget }}
+  comment-id:
+    description: 'ID of the sticky comment that was posted or updated; empty when none was'
+    value: ${{ steps.comment.outputs.comment-id }}
 
 runs:
   using: 'composite'
@@ -84,6 +87,7 @@ runs:
       run: bash "$GITHUB_ACTION_PATH/budget.sh" measure
 
     - name: Comment on Pull Request
+      id: comment
       if: inputs.comment == 'true'
       shell: bash
       env:

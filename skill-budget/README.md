@@ -38,13 +38,13 @@ A skill over a limit gets a warning annotation and an ❌ in the report. It fail
 
 ## Deltas against the base
 
-On pull requests, each value shows its change against the base commit, for example `1250 (+80)`. A skill missing from the base is marked `(new)`.
+On pull requests, each value shows its change against the base commit, for example `1250 (+80)`. A skill missing from the base is marked `(new)`. A skill that a glob in `paths` matched at the base commit but that is gone now is listed as deleted, with negative deltas, so removals lower the totals too.
 
 The base commit must be in the checkout. The default `actions/checkout` fetches a single commit, so use `fetch-depth: 0`. Without the base commit, the action warns and reports values without deltas; it never fetches. Outside pull requests `base-ref` is empty, so there are no deltas.
 
 ## Sticky comment
 
-With `comment: 'true'`, the action keeps one comment per pull request, found by the hidden marker `<!-- toolhive-skill-budget:<comment-key> -->`:
+With `comment: 'true'`, the action keeps one comment per pull request, found by the hidden marker `<!-- toolhive-skill-budget:<comment-key> -->` and written by the same account as the token, so it never overwrites someone else's comment:
 - It posts or updates the comment when a value changed or a limit is exceeded.
 - When nothing changed, it updates an existing comment to "No budget changes" and posts nothing new.
 
@@ -65,6 +65,7 @@ A token without permission produces a warning, not a failure.
 | `report-markdown` | The report as Markdown |
 | `report-file` | Path to the report as JSON |
 | `over-budget` | `'true'` when a skill exceeds a limit |
+| `comment-id` | ID of the sticky comment that was posted or updated; empty when none was |
 
 `report-markdown` contains text from the pull request (paths and counts). Pass it to later steps through `env:`, never inline as `${{ }}` in `run:`, to avoid script injection.
 
