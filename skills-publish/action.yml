@@ -35,7 +35,7 @@ inputs:
 
 outputs:
   references:
-    description: "Newline-delimited references that were pushed, or built when push is 'false'"
+    description: "Newline-delimited references that were pushed and signed, or built when push is 'false'"
     value: ${{ steps.publish.outputs.references }}
   references-json:
     description: 'JSON object mapping each directory name to the list of its references in the references output'
@@ -62,21 +62,12 @@ runs:
       shell: bash
       run: bash "$GITHUB_ACTION_PATH/../lib/daemon.sh" start
 
-    - name: Resolve Directories to Validate
-      id: validate-resolve
-      if: inputs.validate == 'true'
-      shell: bash
-      env:
-        INPUT_PATHS: ${{ steps.discover.outputs.paths }}
-        INPUT_FAIL_ON_WARNINGS: 'false'
-      run: bash "$GITHUB_ACTION_PATH/../skill-validate/validate.sh" resolve
-
     - name: Validate Skills and AI Plugins
       if: inputs.validate == 'true'
       shell: bash
       env:
         TOOLHIVE_API_URL: ${{ steps.daemon.outputs.url }}
-        WORK_DIR: ${{ steps.validate-resolve.outputs.work-dir }}
+        WORK_DIR: ${{ steps.discover.outputs.validate-work-dir }}
         INPUT_FAIL_ON_WARNINGS: 'false'
       run: bash "$GITHUB_ACTION_PATH/../skill-validate/validate.sh" validate
 

@@ -5,12 +5,13 @@
 #   bash "$GITHUB_ACTION_PATH/publish.sh" discover
 #     Checks the inputs, the event and the OIDC permission, and finds the
 #     skills under INPUT_ROOT and the plugins under INPUT_PLUGINS_ROOT.
-#     Outputs: work-dir, paths (newline-delimited directories).
+#     Outputs: work-dir, validate-work-dir (targets for skill-validate).
 #
 #   bash "$GITHUB_ACTION_PATH/publish.sh" publish
 #     Builds every directory for every tag, then pushes every reference when
 #     INPUT_PUSH is 'true', stopping at the first failed push. Outputs:
-#     references, references-json.
+#     references, references-json: only references that were pushed and
+#     signed, or built when not pushing.
 #
 # Runs on the bash 3.2 that ships with macOS: no associative arrays, no
 # mapfile.
@@ -220,8 +221,14 @@ discover() {
     echo "  $path ($type) -> $target_prefix/$name"
   done < "$targets"
 
+  # Validation reads the discovered directories as they are, not as the
+  # patterns skill-validate accepts, so names with glob characters stay
+  # literal.
+  mkdir -p "$work_dir/validate"
+  cut -f1,3 "$targets" > "$work_dir/validate/targets.tsv"
+
   write_output work-dir "$work_dir"
-  write_multiline_output paths "$(cut -f3 "$targets")"
+  write_output validate-work-dir "$work_dir/validate"
 }
 
 publish() {
@@ -273,7 +280,9 @@ publish() {
   write_summary "$built" "$published" "$failed"
 
   if [ -n "$failed" ]; then
-    echo "::error::Stopped at the first failed push ($failed). References already pushed are listed in the outputs; rerun the job to publish the rest."
+    # ToolHive uploads a reference before signing it, so a push that failed
+    # while signing can leave the tag in the registry without a signature.
+    echo "::error::Stopped at the first failed push ($failed). That tag may already be in the registry without a signature: rerun the job to push and sign it again, or delete the tag. The outputs list only references that were pushed and signed."
     exit 1
   fi
 }
@@ -282,7 +291,7 @@ write_summary() {
   [ -n "${GITHUB_STEP_SUMMARY:-}" ] || return 0
   local built="$1" published="$2" failed="$3" status
   if [ "${INPUT_PUSH:-false}" = "true" ]; then
-    status="Pushed"
+    status="Pushed and signed"
   else
     status="Built (not pushed)"
   fi
@@ -297,7 +306,7 @@ write_summary() {
       if grep -Fqx -- "$(printf '%s\t%s\t%s' "$kind" "$name" "$reference")" "$published"; then
         row_status="✅ $status"
       elif [ "$reference" = "$failed" ]; then
-        row_status="❌ Push failed"
+        row_status="❌ Push failed; the tag may be in the registry unsigned"
       else
         row_status="⏭️ Not pushed"
       fi
