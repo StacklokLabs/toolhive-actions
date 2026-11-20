@@ -21,7 +21,7 @@ Build and optionally push a [ToolHive](https://github.com/stacklok/toolhive) ski
 | `path` | Path to the skill directory containing `SKILL.md` | Yes | - |
 | `tags` | Newline-delimited complete OCI references | No | ToolHive default (when `tag` is also omitted) |
 | `tag` | **Deprecated.** One complete OCI reference; use `tags` instead | No | - |
-| `push` | Push every built artifact to a remote OCI registry | No | `false` |
+| `push` | Push every built artifact to a remote OCI registry; accepts exactly `'true'` or `'false'` | No | `false` |
 
 `tags` entries are trimmed, blank lines are ignored, and order is preserved. Duplicate references are rejected. `tag` and `tags` cannot be supplied together. When neither contains a reference, ToolHive's existing default-reference behavior is used. Because `thv skill build --tag` accepts one reference, the action performs a separate build for each explicit reference. Builds are reproducible, so every reference built from the same content has the same digest.
 

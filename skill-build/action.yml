@@ -18,7 +18,7 @@ inputs:
     required: false
     default: ''
   push:
-    description: 'Push every built artifact to a remote OCI registry. Requires prior registry login (e.g., via docker/login-action).'
+    description: "Push every built artifact to a remote OCI registry. Accepts exactly 'true' or 'false'; requires prior registry login (e.g., via docker/login-action)."
     required: false
     default: 'false'
 
@@ -41,6 +41,16 @@ runs:
         INPUT_TAGS: ${{ inputs.tags }}
         INPUT_PUSH: ${{ inputs.push }}
       run: |
+        # Validated exactly here, because the push step's condition compares
+        # case-insensitively and would otherwise push for 'TRUE'.
+        case "$INPUT_PUSH" in
+          true|false) ;;
+          *)
+            echo "::error::The 'push' input must be exactly push: 'true' or push: 'false'."
+            exit 1
+            ;;
+        esac
+
         if [ -n "$INPUT_TAG" ] && [ -n "$INPUT_TAGS" ]; then
           echo "::error::The 'tag' and 'tags' inputs cannot be used together."
           exit 1
