@@ -1,0 +1,44 @@
+name: 'Check Skill References'
+description: 'Check that paths, Taskfile targets and workflows named in skill code exist in the repository'
+author: 'Stacklok'
+branding:
+  icon: 'link'
+  color: 'orange'
+
+inputs:
+  paths:
+    description: "Newline-delimited skill directories, or single-level glob patterns such as 'skills/*'. Blank lines are ignored and surrounding whitespace is trimmed."
+    required: true
+  repo-root:
+    description: 'Repository root that paths, the Taskfile and .github/workflows are resolved against'
+    required: false
+    default: '.'
+  allowlist:
+    description: 'Allowlist file. Defaults to <repo-root>/.skill-refs-allow when that file exists.'
+    required: false
+    default: ''
+  fail:
+    description: "Fail when a reference does not resolve. Accepts exactly 'true' or 'false'."
+    required: false
+    default: 'false'
+
+outputs:
+  findings:
+    description: 'Number of references that do not resolve'
+    value: ${{ steps.check.outputs.findings }}
+  report-file:
+    description: 'Path to a JSON report of the findings'
+    value: ${{ steps.check.outputs.report-file }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check Skill References
+      id: check
+      shell: bash
+      env:
+        INPUT_PATHS: ${{ inputs.paths }}
+        INPUT_REPO_ROOT: ${{ inputs.repo-root }}
+        INPUT_ALLOWLIST: ${{ inputs.allowlist }}
+        INPUT_FAIL: ${{ inputs.fail }}
+      run: bash "$GITHUB_ACTION_PATH/refs.sh"

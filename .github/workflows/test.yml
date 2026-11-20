@@ -1782,6 +1782,180 @@ jobs:
           DAEMON_STARTED: ${{ steps.daemon.outputs.started }}
         run: bash ./lib/daemon.sh stop
 
+  test-skill-refs-action:
+    name: Test Skill Refs Action - ${{ matrix.os }}
+    # macOS runs its own awk and bash, so both platforms are covered.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      REPO: skill-refs/testdata/repo
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Check fixtures with the default allowlist
+        id: default
+        uses: ./skill-refs
+        with:
+          paths: ${{ env.REPO }}/skills/*
+          repo-root: ${{ env.REPO }}
+
+      - name: Check fixtures without allowlist entries
+        id: empty-allowlist
+        uses: ./skill-refs
+        with:
+          paths: ${{ env.REPO }}/skills/*
+          repo-root: ${{ env.REPO }}
+          allowlist: skill-refs/testdata/empty-allow
+
+      - name: Pass a clean skill with fail set
+        id: clean
+        uses: ./skill-refs
+        with:
+          paths: ${{ env.REPO }}/skills/clean-skill
+          repo-root: ${{ env.REPO }}
+          fail: 'true'
+
+      - name: Verify findings
+        env:
+          DEFAULT_FINDINGS: ${{ steps.default.outputs.findings }}
+          DEFAULT_REPORT: ${{ steps.default.outputs.report-file }}
+          EMPTY_FINDINGS: ${{ steps.empty-allowlist.outputs.findings }}
+          EMPTY_REPORT: ${{ steps.empty-allowlist.outputs.report-file }}
+          CLEAN_FINDINGS: ${{ steps.clean.outputs.findings }}
+        run: |
+          fail() { echo "Error: $*"; exit 1; }
+          summarize() {
+            jq -c '[.findings[] | [(.file | split("/skills/") | last), .line, .rule, .reference]]' "$1"
+          }
+          jq . "$DEFAULT_REPORT"
+          EXPECTED='[["broken-path/SKILL.md",8,"path-unresolved","references/missing.md"],["broken-path/SKILL.md",8,"path-unresolved","scripts/missing.sh"],["missing-task/SKILL.md",9,"task-unknown","task deploy"],["missing-task/SKILL.md",12,"task-unknown","task docs:missing"],["missing-task/SKILL.md",13,"task-unknown","task tools"],["missing-task/SKILL.md",13,"task-unknown","task tools:lint"],["missing-workflow/SKILL.md",8,"workflow-unknown","gh workflow run missing.yml"],["missing-workflow/SKILL.md",11,"workflow-unknown",".github/workflows/missing.yml"]]'
+          [ "$DEFAULT_FINDINGS" = "8" ] || fail "findings is '$DEFAULT_FINDINGS', expected 8"
+          [ "$(summarize "$DEFAULT_REPORT")" = "$EXPECTED" ] || fail "unexpected findings: $(summarize "$DEFAULT_REPORT")"
+
+          # The allowlist is what suppresses the allowlisted skill's findings.
+          ALLOWLISTED='[["allowlisted/SKILL.md",8,"path-unresolved","generated/schema.json"],["allowlisted/SKILL.md",8,"task-unknown","task gen-client"],["allowlisted/SKILL.md",9,"workflow-unknown","gh workflow run deploy-prod.yml"]]'
+          [ "$EMPTY_FINDINGS" = "11" ] || fail "findings without allowlist is '$EMPTY_FINDINGS', expected 11"
+          [ "$(summarize "$EMPTY_REPORT")" = "$(jq -c -n --argjson a "$ALLOWLISTED" --argjson b "$EXPECTED" '$a + $b')" ] \
+            || fail "unexpected findings without allowlist: $(summarize "$EMPTY_REPORT")"
+
+          [ "$CLEAN_FINDINGS" = "0" ] || fail "clean-skill has $CLEAN_FINDINGS findings"
+
+      - name: Copy skills with CRLF line endings and a symlinked skill
+        id: variants
+        run: |
+          DIR="$RUNNER_TEMP/refs-variants/skills"
+          mkdir -p "$DIR/missing-workflow"
+          awk '{ printf "%s\r\n", $0 }' "$REPO/skills/missing-workflow/SKILL.md" > "$DIR/missing-workflow/SKILL.md"
+          ln -s "$GITHUB_WORKSPACE/$REPO/skills/broken-path" "$DIR/linked"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Check CRLF and symlinked skills
+        id: variant-check
+        uses: ./skill-refs
+        with:
+          paths: ${{ steps.variants.outputs.dir }}/*
+          repo-root: ${{ env.REPO }}
+
+      - name: Verify CRLF and symlinked skills are scanned
+        env:
+          REPORT: ${{ steps.variant-check.outputs.report-file }}
+        run: |
+          jq . "$REPORT"
+          ACTUAL=$(jq -c '[.findings[] | [(.file | split("/skills/") | last), .line, .rule]]' "$REPORT")
+          EXPECTED='[["linked/SKILL.md",8,"path-unresolved"],["linked/SKILL.md",8,"path-unresolved"],["missing-workflow/SKILL.md",8,"workflow-unknown"],["missing-workflow/SKILL.md",11,"workflow-unknown"]]'
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "Error: unexpected findings: $ACTUAL"
+            exit 1
+          fi
+
+      - name: Fail when a Markdown file cannot be read
+        run: |
+          # A scanner error must fail the check, not look like a clean scan.
+          if [ "$(id -u)" = 0 ]; then
+            echo "Running as root, which can read any file; skipping."
+            exit 0
+          fi
+          DIR="$(mktemp -d)/skills/unreadable"
+          mkdir -p "$DIR"
+          cp "$REPO/skills/missing-workflow/SKILL.md" "$DIR/"
+          echo '# Notes' > "$DIR/A-notes.md"
+          chmod 000 "$DIR/A-notes.md"
+          OUT=$(mktemp)
+          if INPUT_PATHS="$DIR" INPUT_REPO_ROOT="$REPO" INPUT_FAIL=true GITHUB_OUTPUT="$OUT" \
+            bash skill-refs/refs.sh; then
+            echo "Error: the check passed although a file could not be read"
+            exit 1
+          fi
+          if grep -q '^findings=' "$OUT"; then
+            echo "Error: the check reported findings although a file could not be read"
+            exit 1
+          fi
+
+      - name: Fail on findings when fail is set
+        id: fail-findings
+        continue-on-error: true
+        uses: ./skill-refs
+        with:
+          paths: ${{ env.REPO }}/skills/broken-path
+          repo-root: ${{ env.REPO }}
+          fail: 'true'
+
+      - name: Reject a missing explicit allowlist
+        id: missing-allowlist
+        continue-on-error: true
+        uses: ./skill-refs
+        with:
+          paths: ${{ env.REPO }}/skills/clean-skill
+          repo-root: ${{ env.REPO }}
+          allowlist: skill-refs/testdata/does-not-exist
+
+      - name: Reject a missing repository root
+        id: missing-root
+        continue-on-error: true
+        uses: ./skill-refs
+        with:
+          paths: ${{ env.REPO }}/skills/clean-skill
+          repo-root: skill-refs/testdata/does-not-exist
+
+      - name: Reject invalid fail value
+        id: bad-fail
+        continue-on-error: true
+        uses: ./skill-refs
+        with:
+          paths: ${{ env.REPO }}/skills/clean-skill
+          repo-root: ${{ env.REPO }}
+          fail: 'yes'
+
+      - name: Reject a plugin directory
+        id: plugin-path
+        continue-on-error: true
+        uses: ./skill-refs
+        with:
+          paths: skill-validate/testdata/plugins/valid-plugin
+
+      - name: Verify failing runs
+        env:
+          OUTCOMES: >-
+            fail-findings=${{ steps.fail-findings.outcome }}
+            missing-allowlist=${{ steps.missing-allowlist.outcome }}
+            missing-root=${{ steps.missing-root.outcome }}
+            bad-fail=${{ steps.bad-fail.outcome }}
+            plugin-path=${{ steps.plugin-path.outcome }}
+        run: |
+          FAILED=false
+          for ENTRY in $OUTCOMES; do
+            if [ "${ENTRY#*=}" != "failure" ]; then
+              echo "Error: ${ENTRY%%=*} did not fail (outcome: ${ENTRY#*=})"
+              FAILED=true
+            fi
+          done
+          $FAILED && exit 1
+          echo "All failing runs failed."
+
   lint-shell:
     name: Lint Shared Shell Scripts
     runs-on: ubuntu-latest
@@ -1796,7 +1970,7 @@ jobs:
             sudo apt-get update -q && sudo apt-get install -y -q shellcheck
           fi
           shellcheck --version
-          shellcheck -x lib/*.sh skill-validate/*.sh skills-publish/*.sh skill-budget/*.sh
+          shellcheck -x lib/*.sh skill-validate/*.sh skills-publish/*.sh skill-budget/*.sh skill-refs/*.sh
 
   validate-action-metadata:
     name: Validate Action Metadata
@@ -1867,3 +2041,9 @@ jobs:
           echo "Validating skill-budget/action.yml..."
           yq eval '.' skill-budget/action.yml > /dev/null
           echo "✓ skill-budget/action.yml is valid"
+
+      - name: Validate skill-refs/action.yml
+        run: |
+          echo "Validating skill-refs/action.yml..."
+          yq eval '.' skill-refs/action.yml > /dev/null
+          echo "✓ skill-refs/action.yml is valid"
