@@ -859,6 +859,30 @@ jobs:
           DAEMON_STARTED: ${{ steps.fallback.outputs.started }}
         run: bash ./lib/daemon.sh stop
 
+      - name: Start and stop without a working ps
+        run: |
+          # Minimal job containers may lack ps. Liveness must then fall back
+          # to /proc or kill -0 instead of treating the daemon as dead.
+          SHIM=$(mktemp -d)
+          printf '#!/bin/sh\nexit 127\n' > "$SHIM/ps"
+          chmod +x "$SHIM/ps"
+          OUT=$(mktemp)
+          PATH="$SHIM:$PATH" GITHUB_OUTPUT="$OUT" TOOLHIVE_API_URL=http://127.0.0.1:9 \
+            timeout 60 bash ./lib/daemon.sh start
+          PID=$(sed -n 's/^pid=//p' "$OUT")
+          URL=$(sed -n 's/^url=//p' "$OUT")
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' "$URL/health" || true)
+          case "$CODE" in
+            204|503) ;;
+            *) echo "Error: daemon not ready without ps (health $CODE)"; exit 1 ;;
+          esac
+          PATH="$SHIM:$PATH" DAEMON_PID="$PID" DAEMON_STARTED=true timeout 30 bash ./lib/daemon.sh stop
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' "$URL/health" || true)
+          if [ "$CODE" != "000" ]; then
+            echo "Error: daemon still answers after stop without ps (health $CODE)"
+            exit 1
+          fi
+
       - name: Reject TOOLHIVE_API_URL with a line break
         id: newline-url
         continue-on-error: true

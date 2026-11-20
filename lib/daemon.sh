@@ -41,13 +41,29 @@ is_ready() {
   esac
 }
 
+# Prints the process state letter (for example S, R or Z), or nothing when it
+# cannot be read. /proc is used where it exists, so minimal containers without
+# ps work; elsewhere ps is asked.
+process_state() {
+  local stat
+  if [ -r "/proc/$1/stat" ]; then
+    IFS= read -r stat < "/proc/$1/stat" 2>/dev/null || return 0
+    # The command name is in parentheses and may contain spaces.
+    stat="${stat##*) }"
+    printf '%s' "${stat%% *}"
+    return 0
+  fi
+  ps -o stat= -p "$1" 2>/dev/null || true
+}
+
 # True while the process exists and has not exited. A stopped server whose
 # parent shell is gone can linger as a zombie until init reaps it, and
-# `kill -0` still succeeds on zombies, so check the process state too.
+# `kill -0` still succeeds on zombies, so check the process state too. When
+# the state cannot be read, `kill -0` alone decides.
 is_alive() {
   kill -0 "$1" 2>/dev/null || return 1
-  case "$(ps -o stat= -p "$1" 2>/dev/null)" in
-    ""|Z*) return 1 ;;
+  case "$(process_state "$1")" in
+    Z*) return 1 ;;
     *) return 0 ;;
   esac
 }
