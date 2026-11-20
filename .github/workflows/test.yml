@@ -1756,16 +1756,30 @@ jobs:
           comment: 'true'
           comment-key: ${{ env.COMMENT_KEY }}
 
+      - name: Keep the sticky comment when the base is unavailable
+        id: keep
+        uses: ./skill-budget
+        with:
+          paths: ${{ runner.temp }}/budget-repo/skills/small-skill
+          base-ref: 0123456789abcdef0123456789abcdef01234567
+          comment: 'true'
+          comment-key: ${{ env.COMMENT_KEY }}
+
       - name: Verify exactly one sticky comment
         if: env.CAN_COMMENT == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           POSTED_ID: ${{ steps.post.outputs.comment-id }}
+          KEPT_ID: ${{ steps.keep.outputs.comment-id }}
           UPDATED_ID: ${{ steps.comment.outputs.comment-id }}
         run: |
           if [ -z "$POSTED_ID" ] || [ "$POSTED_ID" != "$UPDATED_ID" ]; then
             echo "Error: the second run did not update the posted comment (posted '$POSTED_ID', updated '$UPDATED_ID')"
+            exit 1
+          fi
+          if [ -n "$KEPT_ID" ]; then
+            echo "Error: a run without its base commit changed the comment"
             exit 1
           fi
           COMMENTS=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" | jq -s --arg marker "<!-- toolhive-skill-budget:$COMMENT_KEY -->" \

@@ -23,6 +23,20 @@ set -euo pipefail
 # shellcheck source=lib/paths.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/paths.sh"
 
+# Runs a command that lists files into a new temporary file and prints the
+# file's path. A failing command fails the step instead of producing a short
+# list, which process substitution would hide.
+list_to_file() {
+  local list
+  list=$(mktemp)
+  if ! "$@" > "$list"; then
+    echo "::error::Could not list files: $*" >&2
+    rm -f "$list"
+    exit 1
+  fi
+  printf '%s' "$list"
+}
+
 write_output() {
   printf '%s=%s\n' "$1" "$2" >> "${GITHUB_OUTPUT:?GITHUB_OUTPUT is not set}"
 }
@@ -77,13 +91,15 @@ is_text_file() {
 
 # Prints the metrics of a skill directory on disk as JSON.
 measure_dir() {
-  local dir="$1" file directory_chars=0 chars
+  local dir="$1" file directory_chars=0 chars list
+  list=$(list_to_file find "$dir" -name .git -prune -o -type f -print0) || exit 1
   while IFS= read -r -d '' file; do
     if is_text_file "$file"; then
       chars=$(file_chars "$file")
       directory_chars=$((directory_chars + chars))
     fi
-  done < <(find "$dir" -name .git -prune -o -type f -print0)
+  done < "$list"
+  rm -f "$list"
   jq -n -c \
     --argjson skill_md_chars "$(file_chars "$dir/SKILL.md")" \
     --argjson skill_md_lines "$(file_lines "$dir/SKILL.md")" \
@@ -97,15 +113,17 @@ measure_dir() {
 # repository, commit, directory path relative to the repository root (empty
 # or ending in /), scratch directory.
 measure_commit() {
-  local repo="$1" commit="$2" prefix="$3" scratch="$4" file target
+  local repo="$1" commit="$2" prefix="$3" scratch="$4" file target list
   rm -rf "$scratch"
   mkdir -p "$scratch"
+  # An empty prefix is the repository root, which git names "." here.
+  list=$(list_to_file git -C "$repo" ls-tree -r -z --name-only "$commit" -- "${prefix:-.}") || exit 1
   while IFS= read -r -d '' file; do
     target="$scratch/${file#"$prefix"}"
     mkdir -p "$(dirname "$target")"
-    git -C "$repo" show "$commit:$file" > "$target"
-  # An empty prefix is the repository root, which git names "." here.
-  done < <(git -C "$repo" ls-tree -r -z --name-only "$commit" -- "${prefix:-.}")
+    git -C "$repo" show "$commit:$file" > "$target" || exit 1
+  done < "$list"
+  rm -f "$list"
   measure_dir "$scratch"
 }
 
@@ -160,7 +178,8 @@ base_matches() {
   prefix=$(git -C "$lead" rev-parse --show-prefix)
   git -C "$repo" cat-file -e "${base}^{commit}" 2>/dev/null || return 0
 
-  local depth slashes
+  local depth slashes list
+  list=$(list_to_file git -C "$repo" ls-tree -r -z --name-only "$base" -- "${prefix:-.}") || exit 1
   slashes="${rest//[!\/]/}"
   depth=${#slashes}
   while IFS= read -r -d '' file; do
@@ -179,7 +198,8 @@ base_matches() {
     if [ "$lead" = "." ]; then candidate="$rel"; else candidate="$lead/$rel"; fi
     [ -f "$candidate/SKILL.md" ] && continue
     printf '%s\t%s\t%s\n' "$candidate" "$repo" "$prefix$rel/"
-  done < <(git -C "$repo" ls-tree -r -z --name-only "$base" -- "${prefix:-.}")
+  done < "$list"
+  rm -f "$list"
 }
 
 measure() {
@@ -297,6 +317,9 @@ measure() {
        description_tokens: {
          current: ([$skills[].current.description_tokens] | add // 0),
          delta: (if $base_note == "available" then ([$skills[].delta.description_tokens // 0] | add // 0) else null end)},
+       comparison: (if $base == "" then "none"
+         elif any($skills[]; .base_status == "unavailable") then "unavailable"
+         else "available" end),
        over_budget: any($skills[]; .breaches | length > 0),
        changed: (any($skills[]; .breaches | length > 0)
          or any($skills[]; .delta != null and (.delta | to_entries | any(.value != 0))))}
@@ -407,6 +430,11 @@ comment() {
   local body
   if [ "$(jq -r '.changed' "$report")" = "true" ]; then
     body="$marker"$'\n'"$markdown"
+  elif [ "$(jq -r '.comparison' "$report")" = "unavailable" ]; then
+    # Without the base commit there are no deltas, so "no changes" would be a
+    # guess; keep whatever the comment says now.
+    echo "::notice::The base commit is not available, so the budget comment was left unchanged."
+    return 0
   elif [ -n "$existing" ]; then
     body="$marker"$'\n'"### Skill budget"$'\n\n'"No budget changes in the latest commit."
   else
