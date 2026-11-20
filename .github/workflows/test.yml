@@ -1378,6 +1378,17 @@ jobs:
           registry-prefix: ${{ env.SKILLS_PREFIX }}
           tags: must-not-build
 
+      - name: Reject an empty validate value
+        id: empty-validate
+        continue-on-error: true
+        uses: ./skills-publish
+        with:
+          root: ${{ env.FIXTURES }}/skills
+          registry-prefix: ${{ env.SKILLS_PREFIX }}
+          tags: must-not-build
+          # An unset repository variable expands to an empty string.
+          validate: ${{ vars.TOOLHIVE_ACTIONS_UNSET_VARIABLE }}
+
       - name: Reject invalid push value
         id: bad-push
         continue-on-error: true
@@ -1400,6 +1411,7 @@ jobs:
             reference-tag=${{ steps.reference-tag.outcome }}
             empty-root=${{ steps.empty-root.outcome }}
             bad-push=${{ steps.bad-push.outcome }}
+            empty-validate=${{ steps.empty-validate.outcome }}
         run: |
           FAILED=false
           for ENTRY in $OUTCOMES; do
