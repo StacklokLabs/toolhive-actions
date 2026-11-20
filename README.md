@@ -134,6 +134,14 @@ keylessly and is allowed only on trusted events.
 
 [📖 Full Documentation](./skills-publish/README.md)
 
+### 10. `skill-budget` - Report Skill Context Budget
+
+Estimates the context cost of each skill (`SKILL.md`, the whole directory and the
+description), shows the change against the pull request base, flags skills over
+a limit, and can keep a sticky pull request comment. Needs no ToolHive install.
+
+[📖 Full Documentation](./skill-budget/README.md)
+
 ## 📚 Examples
 
 ### Basic Installation and Usage

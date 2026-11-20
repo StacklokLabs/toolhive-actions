@@ -1562,6 +1562,226 @@ jobs:
           DAEMON_STARTED: ${{ steps.daemon.outputs.started }}
         run: bash ./lib/daemon.sh stop
 
+  test-skill-budget-action:
+    name: Test Skill Budget Action
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The sticky comment test posts, updates and deletes a real comment.
+      pull-requests: write
+    env:
+      FIXTURES: skill-budget/testdata
+      # Same-repository pull requests can comment; forks and other events
+      # check the skip path instead.
+      CAN_COMMENT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Measure fixtures
+        id: measure
+        uses: ./skill-budget
+        with:
+          paths: ${{ env.FIXTURES }}/*
+          base-ref: ''
+
+      - name: Verify report
+        env:
+          OVER_BUDGET: ${{ steps.measure.outputs.over-budget }}
+          REPORT_FILE: ${{ steps.measure.outputs.report-file }}
+          REPORT_MARKDOWN: ${{ steps.measure.outputs.report-markdown }}
+        run: |
+          fail() { echo "Error: $*"; exit 1; }
+          jq . "$REPORT_FILE"
+          printf '%s\n' "$REPORT_MARKDOWN"
+          [ "$OVER_BUDGET" = "true" ] || fail "over-budget is '$OVER_BUDGET'"
+          jq -e '.skills | map({key: .name, value: .current}) | from_entries == {
+              "over-budget": {skill_md_tokens: 6790, skill_md_lines: 527, directory_tokens: 6790, description_tokens: 16},
+              "small-skill": {skill_md_tokens: 54, skill_md_lines: 10, directory_tokens: 67, description_tokens: 22}}' \
+            "$REPORT_FILE" >/dev/null || fail "unexpected measurements (the binary asset must not count)"
+          jq -e '.skills[] | select(.name == "over-budget") | .breaches | length == 2' "$REPORT_FILE" >/dev/null \
+            || fail "over-budget should breach both limits"
+          jq -e '.description_tokens == {current: 38, delta: null} and all(.skills[]; .delta == null)' "$REPORT_FILE" >/dev/null \
+            || fail "without a base there should be no deltas"
+          # shellcheck disable=SC2016 # Literal backticks in the Markdown row.
+          grep -Fq '| `skill-budget/testdata/over-budget` | 6790 | 527 | 6790 | 16 | ❌ Over budget |' <<< "$REPORT_MARKDOWN" \
+            || fail "markdown row for over-budget is missing"
+
+      - name: Fail when over budget and fail is set
+        id: fail-over-budget
+        continue-on-error: true
+        uses: ./skill-budget
+        with:
+          paths: ${{ env.FIXTURES }}/over-budget
+          base-ref: ''
+          fail: 'true'
+
+      - name: Pass with raised limits
+        id: raised-limits
+        uses: ./skill-budget
+        with:
+          paths: ${{ env.FIXTURES }}/over-budget
+          base-ref: ''
+          max-skill-tokens: '10000'
+          max-skill-lines: '1000'
+          fail: 'true'
+
+      - name: Create a repository with a base commit
+        id: repo
+        env:
+          REPO: ${{ runner.temp }}/budget-repo
+        run: |
+          mkdir -p "$REPO/skills"
+          cp -R "$FIXTURES/small-skill" "$REPO/skills/"
+          git -C "$REPO" init -q
+          git -C "$REPO" add -A
+          git -C "$REPO" -c user.name=ci -c user.email=ci@example.com commit -q -m base
+          echo "base=$(git -C "$REPO" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          printf '\nMore instructions added in this change, roughly forty chars.\n' >> "$REPO/skills/small-skill/SKILL.md"
+          mkdir -p "$REPO/skills/fresh"
+          printf -- '---\nname: fresh\ndescription: New skill.\n---\n# Fresh\n' > "$REPO/skills/fresh/SKILL.md"
+
+      - name: Measure against the base commit
+        id: delta
+        uses: ./skill-budget
+        with:
+          paths: ${{ runner.temp }}/budget-repo/skills/*
+          base-ref: ${{ steps.repo.outputs.base }}
+
+      - name: Measure against a missing base commit
+        id: missing-base
+        uses: ./skill-budget
+        with:
+          paths: ${{ runner.temp }}/budget-repo/skills/small-skill
+          base-ref: 0123456789abcdef0123456789abcdef01234567
+
+      - name: Verify deltas
+        env:
+          FAIL_OUTCOME: ${{ steps.fail-over-budget.outcome }}
+          RAISED_OVER_BUDGET: ${{ steps.raised-limits.outputs.over-budget }}
+          DELTA_REPORT: ${{ steps.delta.outputs.report-file }}
+          DELTA_MARKDOWN: ${{ steps.delta.outputs.report-markdown }}
+          MISSING_REPORT: ${{ steps.missing-base.outputs.report-file }}
+        run: |
+          fail() { echo "Error: $*"; exit 1; }
+          [ "$FAIL_OUTCOME" = "failure" ] || fail "fail: 'true' did not fail an over-budget skill"
+          [ "$RAISED_OVER_BUDGET" = "false" ] || fail "raised limits still report over budget"
+          jq . "$DELTA_REPORT"
+          jq -e '.skills | map({key: .name, value: {base_status, delta}}) | from_entries == {
+              fresh: {base_status: "new", delta: {skill_md_tokens: 13, skill_md_lines: 5, directory_tokens: 13, description_tokens: 3}},
+              "small-skill": {base_status: "found", delta: {skill_md_tokens: 15, skill_md_lines: 2, directory_tokens: 15, description_tokens: 0}}}' \
+            "$DELTA_REPORT" >/dev/null || fail "unexpected deltas"
+          jq -e '.description_tokens == {current: 25, delta: 3} and .changed' "$DELTA_REPORT" >/dev/null \
+            || fail "unexpected description total"
+          grep -Fq '| 69 (+15) | 12 (+2) | 82 (+15) | 22 | ✅ |' <<< "$DELTA_MARKDOWN" || fail "markdown deltas missing"
+          jq -e 'all(.skills[]; .base_status == "unavailable" and .delta == null) and (.changed | not)' \
+            "$MISSING_REPORT" >/dev/null || fail "a missing base should give no deltas"
+
+      - name: Post the sticky comment
+        if: env.CAN_COMMENT == 'true'
+        uses: ./skill-budget
+        with:
+          paths: ${{ env.FIXTURES }}/over-budget
+          base-ref: ''
+          comment: 'true'
+          comment-key: ci-selftest
+
+      - name: Update the sticky comment
+        id: comment
+        uses: ./skill-budget
+        with:
+          paths: ${{ env.FIXTURES }}/over-budget
+          base-ref: ''
+          comment: 'true'
+          comment-key: ci-selftest
+
+      - name: Verify exactly one sticky comment
+        if: env.CAN_COMMENT == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          COMMENTS=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+            --jq '[.[] | select(.body | startswith("<!-- toolhive-skill-budget:ci-selftest -->"))]' | jq -s 'add')
+          printf '%s\n' "$COMMENTS" | jq '[.[] | {id, body: .body[0:200]}]'
+          if [ "$(printf '%s' "$COMMENTS" | jq 'length')" != "1" ]; then
+            echo "Error: expected exactly one sticky comment"
+            exit 1
+          fi
+          if ! printf '%s' "$COMMENTS" | jq -e '.[0].body | contains("❌ Over budget")' >/dev/null; then
+            echo "Error: the sticky comment does not contain the report"
+            exit 1
+          fi
+
+      - name: Delete the sticky comment
+        if: always() && env.CAN_COMMENT == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+            --jq '.[] | select(.body | startswith("<!-- toolhive-skill-budget:ci-selftest -->")) | .id' \
+          | while IFS= read -r ID; do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/comments/$ID"
+            echo "Deleted comment $ID"
+          done
+
+      - name: Reject invalid fail value
+        id: bad-fail
+        continue-on-error: true
+        uses: ./skill-budget
+        with:
+          paths: ${{ env.FIXTURES }}/small-skill
+          fail: 'yes'
+
+      - name: Reject invalid comment key
+        id: bad-key
+        continue-on-error: true
+        uses: ./skill-budget
+        with:
+          paths: ${{ env.FIXTURES }}/small-skill
+          comment-key: 'two words'
+
+      - name: Reject invalid token limit
+        id: bad-limit
+        continue-on-error: true
+        uses: ./skill-budget
+        with:
+          paths: ${{ env.FIXTURES }}/small-skill
+          max-skill-tokens: '0'
+
+      - name: Reject a plugin directory
+        id: plugin-path
+        continue-on-error: true
+        uses: ./skill-budget
+        with:
+          paths: skill-validate/testdata/plugins/valid-plugin
+
+      - name: Verify rejected inputs
+        env:
+          COMMENT_OUTCOME: ${{ steps.comment.outcome }}
+          OUTCOMES: >-
+            bad-fail=${{ steps.bad-fail.outcome }}
+            bad-key=${{ steps.bad-key.outcome }}
+            bad-limit=${{ steps.bad-limit.outcome }}
+            plugin-path=${{ steps.plugin-path.outcome }}
+        run: |
+          # The comment step also runs where commenting is skipped; skipping
+          # must not fail it.
+          if [ "$COMMENT_OUTCOME" != "success" ]; then
+            echo "Error: the comment step failed (outcome: $COMMENT_OUTCOME)"
+            exit 1
+          fi
+          FAILED=false
+          for ENTRY in $OUTCOMES; do
+            if [ "${ENTRY#*=}" != "failure" ]; then
+              echo "Error: ${ENTRY%%=*} was not rejected (outcome: ${ENTRY#*=})"
+              FAILED=true
+            fi
+          done
+          $FAILED && exit 1
+          echo "All invalid inputs were rejected."
+
   lint-shell:
     name: Lint Shared Shell Scripts
     runs-on: ubuntu-latest
@@ -1576,7 +1796,7 @@ jobs:
             sudo apt-get update -q && sudo apt-get install -y -q shellcheck
           fi
           shellcheck --version
-          shellcheck lib/*.sh skill-validate/*.sh skills-publish/*.sh
+          shellcheck -x lib/*.sh skill-validate/*.sh skills-publish/*.sh skill-budget/*.sh
 
   validate-action-metadata:
     name: Validate Action Metadata
@@ -1641,3 +1861,9 @@ jobs:
           echo "Validating skills-publish/action.yml..."
           yq eval '.' skills-publish/action.yml > /dev/null
           echo "✓ skills-publish/action.yml is valid"
+
+      - name: Validate skill-budget/action.yml
+        run: |
+          echo "Validating skill-budget/action.yml..."
+          yq eval '.' skill-budget/action.yml > /dev/null
+          echo "✓ skill-budget/action.yml is valid"
