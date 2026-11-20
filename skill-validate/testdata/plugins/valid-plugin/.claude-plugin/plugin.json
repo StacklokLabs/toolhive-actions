@@ -1,0 +1,8 @@
+{
+  "name": "valid-plugin",
+  "description": "Fixture AI-tool plugin with no validation findings",
+  "version": "0.1.0",
+  "author": {
+    "name": "Stacklok"
+  }
+}

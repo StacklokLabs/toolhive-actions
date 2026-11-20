@@ -118,6 +118,14 @@ the committed content matches the pinned artifacts and trust policy.
 
 [📖 Full Documentation](./lockfile-verify/README.md)
 
+### 8. `skill-validate` - Validate Skills and AI-Tool Plugins
+
+Validates skill and AI-tool plugin directories, or single-level globs such as
+`skills/*`, with ToolHive. Reports every finding as an annotation on its file and
+line, writes a summary table and a JSON report, and can fail on warnings.
+
+[📖 Full Documentation](./skill-validate/README.md)
+
 ## 📚 Examples
 
 ### Basic Installation and Usage
