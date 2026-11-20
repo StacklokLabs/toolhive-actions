@@ -142,6 +142,14 @@ a limit, and can keep a sticky pull request comment. Needs no ToolHive install.
 
 [📖 Full Documentation](./skill-budget/README.md)
 
+### 11. `skill-refs` - Check Skill References
+
+Checks that backticked paths, `task` targets and GitHub workflows named in skill
+code exist in the repository, with a typed allowlist for intentional exceptions.
+Reads the Taskfile with `yq` and never executes repository content.
+
+[📖 Full Documentation](./skill-refs/README.md)
+
 ## 📚 Examples
 
 ### Basic Installation and Usage

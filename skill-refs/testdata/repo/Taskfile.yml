@@ -1,0 +1,18 @@
+version: '3'
+
+includes:
+  docs: ./docs
+  remote:
+    taskfile: https://example.com/Taskfile.yml
+
+tasks:
+  build:
+    cmds:
+      - echo build
+  test:
+    aliases: [t]
+    cmds:
+      - echo test
+  release:*:
+    cmds:
+      - echo release
