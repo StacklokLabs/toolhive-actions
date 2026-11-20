@@ -1,0 +1,8 @@
+# Files generated at build time.
+generated/*
+
+# Tasks from a generated Taskfile include.
+task:gen-*
+
+# Workflows that live in the deployment repository.
+workflow:deploy-*
