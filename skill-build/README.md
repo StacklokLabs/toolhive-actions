@@ -7,7 +7,7 @@ Build and optionally push a [ToolHive](https://github.com/stacklok/toolhive) ski
 - Build a skill from a local directory containing a `SKILL.md`
 - Build one artifact for each requested OCI reference
 - Optionally push every built artifact to any OCI-compatible registry (ghcr.io, Docker Hub, etc.)
-- Validates skill structure and tag input before building
+- Validates the skill with `thv skill validate` and checks tag input before building
 
 ## Prerequisites
 
@@ -23,7 +23,7 @@ Build and optionally push a [ToolHive](https://github.com/stacklok/toolhive) ski
 | `tag` | **Deprecated.** One complete OCI reference; use `tags` instead | No | - |
 | `push` | Push every built artifact to a remote OCI registry | No | `false` |
 
-`tags` entries are trimmed, blank lines are ignored, and order is preserved. Duplicate references are rejected. `tag` and `tags` cannot be supplied together. When neither contains a reference, ToolHive's existing default-reference behavior is used. Because `thv skill build --tag` accepts one reference, the action performs a separate build for each explicit reference; different builds are not guaranteed to have the same digest.
+`tags` entries are trimmed, blank lines are ignored, and order is preserved. Duplicate references are rejected. `tag` and `tags` cannot be supplied together. When neither contains a reference, ToolHive's existing default-reference behavior is used. Because `thv skill build --tag` accepts one reference, the action performs a separate build for each explicit reference. Builds are reproducible, so every reference built from the same content has the same digest.
 
 The deprecated `tag` input remains compatible with existing workflows and emits a GitHub Actions warning when used. Migrate a single tag like this:
 
@@ -65,7 +65,13 @@ steps:
 
 ### Build and Push to GHCR
 
+Pushing signs the skill keylessly with the job's OIDC token, so the job needs `id-token: write` (and `packages: write` for GHCR):
+
 ```yaml
+permissions:
+  contents: read
+  packages: write
+  id-token: write
 steps:
   - uses: actions/checkout@v4
 
@@ -157,7 +163,8 @@ See the [Agent Skills Specification](https://agentskills.io/specification) for t
 
 ## Security
 
-- The action validates the skill directory structure before building
+- The action runs `thv skill validate` before building, so an invalid skill fails without building anything
+- With `push: 'true'`, the action fails before building unless the job can request an OIDC token (`permissions: id-token: write`). ToolHive signs pushed skills keylessly with that token; without it, ToolHive would fall back to an interactive browser sign-in that cannot complete in CI
 - No registry credentials are handled by this action — use a dedicated login action (e.g., `docker/login-action`) to configure credentials before pushing
 - The action reuses a ToolHive daemon reachable at `TOOLHIVE_API_URL` (default `http://127.0.0.1:8080`) whose health check answers 204 or 503; otherwise it starts one on a random loopback port and stops only that action-owned process
 
@@ -178,6 +185,17 @@ Ensure your `path` input points to a directory containing a valid `SKILL.md` fil
 ### "ToolHive daemon failed to start"
 
 Check that the ToolHive version you installed supports the `skill` command. This feature requires a recent version of ToolHive.
+
+### "Pushing signs artifacts with the job's GitHub OIDC token"
+
+The job pushes with `push: 'true'` but lacks permission to request an OIDC token. Add it to the job:
+
+```yaml
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+```
 
 ### Push fails with authentication error
 
