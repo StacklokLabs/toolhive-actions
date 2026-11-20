@@ -93,7 +93,7 @@ Use the newline-delimited `tags` input for one or more references:
     push: 'true'
 ```
 
-Each explicit reference is built separately because ToolHive accepts one `--tag` per build; artifact digests may differ. Blank lines are ignored, whitespace is trimmed, order is preserved, and duplicates are rejected. The `reference` output is the first built reference and `references` contains all references, newline-delimited. The legacy single-reference `tag` input is deprecated and warns when used; it cannot be combined with `tags`. With neither input, ToolHive's default reference is preserved. See the full documentation for migration details and output usage.
+Each explicit reference is built separately because ToolHive accepts one `--tag` per build; builds are reproducible, so they share one digest. Blank lines are ignored, whitespace is trimmed, order is preserved, and duplicates are rejected. The `reference` output is the first built reference and `references` contains all references, newline-delimited. The legacy single-reference `tag` input is deprecated and warns when used; it cannot be combined with `tags`. With neither input, ToolHive's default reference is preserved. See the full documentation for migration details and output usage.
 
 [📖 Full Documentation](./skill-build/README.md)
 
