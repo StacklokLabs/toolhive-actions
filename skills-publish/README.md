@@ -36,7 +36,7 @@ Builds are reproducible: an unchanged skill gets the same digest under every tag
 | `plugins-registry-prefix` | OCI repository prefix for AI-tool plugins | No | `registry-prefix` |
 | `tags` | Newline-delimited plain tags applied to every skill and plugin, for example `v1.2.0` and `latest` | Yes | - |
 | `push` | Push every built artifact; accepts exactly `'true'` or `'false'` | No | `false` |
-| `validate` | Validate every directory before building; accepts exactly `'true'` or `'false'` | No | `true` |
+| `validate` | Validate every directory before building; accepts exactly `'true'` or `'false'`, and an empty value is rejected | No | `true` |
 
 - **Prefixes** must be lowercase, include a registry and a path, and have no tag, digest or trailing `/`. GitHub owner and repository names can contain capitals, but OCI paths can't, so lowercase `github.repository` yourself before passing it.
 - **Shared prefix:** when skills and plugins share a prefix, a skill and a plugin with the same directory name would overwrite each other, so the action fails before building. Set `plugins-registry-prefix` to keep them apart.

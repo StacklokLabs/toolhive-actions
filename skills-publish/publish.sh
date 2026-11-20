@@ -155,8 +155,11 @@ discover_root() {
 }
 
 discover() {
-  check_boolean push "${INPUT_PUSH:-false}"
-  check_boolean validate "${INPUT_VALIDATE:-true}"
+  # No fallback for empty values: the action's step conditions compare the
+  # raw inputs, so an empty validate would skip validation while a default
+  # here would claim it runs.
+  check_boolean push "${INPUT_PUSH:-}"
+  check_boolean validate "${INPUT_VALIDATE:-}"
 
   local prefix="${INPUT_REGISTRY_PREFIX:-}"
   local plugins_prefix="${INPUT_PLUGINS_REGISTRY_PREFIX:-}"
