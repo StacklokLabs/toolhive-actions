@@ -24,6 +24,9 @@ readonly FINDINGS_VERSION="v0.67.0"
 readonly SKILL_MARKER="SKILL.md"
 readonly PLUGIN_MARKER=".claude-plugin/plugin.json"
 
+# shellcheck source=lib/paths.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/paths.sh"
+
 write_output() {
   printf '%s=%s\n' "$1" "$2" >> "${GITHUB_OUTPUT:?GITHUB_OUTPUT is not set}"
 }
@@ -37,41 +40,6 @@ plural() {
   fi
 }
 
-trim() {
-  local value="$1"
-  value="${value#"${value%%[![:space:]]*}"}"
-  value="${value%"${value##*[![:space:]]}"}"
-  printf '%s' "$value"
-}
-
-# Strips a leading ./ and trailing slashes so equal paths print the same way.
-normalize_path() {
-  local path="$1"
-  while [[ "$path" == ./* && "$path" != "./" ]]; do
-    path="${path#./}"
-  done
-  while [[ "$path" == */ && "$path" != "/" ]]; do
-    path="${path%/}"
-  done
-  printf '%s' "$path"
-}
-
-# Prints "skill", "plugin", "both" or "none" for a directory.
-classify() {
-  local has_skill=false has_plugin=false
-  [ -f "$1/$SKILL_MARKER" ] && has_skill=true
-  [ -f "$1/$PLUGIN_MARKER" ] && has_plugin=true
-  if $has_skill && $has_plugin; then
-    echo both
-  elif $has_skill; then
-    echo skill
-  elif $has_plugin; then
-    echo plugin
-  else
-    echo none
-  fi
-}
-
 check_fail_on_warnings() {
   case "${INPUT_FAIL_ON_WARNINGS:-false}" in
     true|false) ;;
@@ -80,18 +48,6 @@ check_fail_on_warnings() {
       exit 1
       ;;
   esac
-}
-
-# Adds a directory to the target list unless it resolves to one already there.
-# Arguments: path, type, targets file, seen file.
-add_target() {
-  local path="$1" type="$2" targets="$3" seen="$4" real
-  real=$(cd "$path" && pwd -P)
-  if grep -Fxq -- "$real" "$seen"; then
-    return 0
-  fi
-  printf '%s\n' "$real" >> "$seen"
-  printf '%s\t%s\n' "$type" "$path" >> "$targets"
 }
 
 resolve() {
@@ -106,92 +62,13 @@ resolve() {
     exit 1
   fi
 
-  local temp_root work_dir targets seen
+  local temp_root work_dir targets
   temp_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
   work_dir=$(mktemp -d "${temp_root}/toolhive-skill-validate.XXXXXX")
   targets="$work_dir/targets.tsv"
-  seen="$work_dir/seen"
   : > "$targets"
-  : > "$seen"
 
-  local line entry path type matched match failed=false count=0
-  while IFS= read -r line || [ -n "$line" ]; do
-    entry=$(trim "$line")
-    [ -z "$entry" ] && continue
-    count=$((count + 1))
-
-    if [[ "$entry" == *'**'* ]]; then
-      echo "::error::The 'paths' input does not support '**' ($entry). List each level instead, for example 'skills/*' and 'plugins/*/skills/*'."
-      failed=true
-      continue
-    fi
-
-    if [[ "$entry" != *[*?[]* ]]; then
-      path=$(normalize_path "$entry")
-      if [ ! -d "$path" ]; then
-        echo "::error::Directory not found: $entry"
-        failed=true
-        continue
-      fi
-      type=$(classify "$path")
-      case "$type" in
-        skill|plugin) add_target "$path" "$type" "$targets" "$seen" ;;
-        both)
-          echo "::error::$entry has both $SKILL_MARKER and $PLUGIN_MARKER; a directory must be either a skill or an AI-tool plugin."
-          failed=true
-          ;;
-        none)
-          echo "::error::$entry is not a skill or AI-tool plugin directory (no $SKILL_MARKER or $PLUGIN_MARKER)."
-          failed=true
-          ;;
-      esac
-      continue
-    fi
-
-    # Glob: expand without word splitting, skip entries that are not skill or
-    # plugin directories, but require at least one match.
-    local -a matches=()
-    local old_ifs="$IFS"
-    shopt -s nullglob
-    IFS=
-    # shellcheck disable=SC2206 # Intentional glob expansion of the pattern.
-    matches=($entry)
-    IFS="$old_ifs"
-    shopt -u nullglob
-
-    matched=0
-    for match in ${matches[@]+"${matches[@]}"}; do
-      [ -d "$match" ] || continue
-      if [[ "$match" == *$'\n'* || "$match" == *$'\r'* || "$match" == *$'\t'* ]]; then
-        echo "::error::Matched path contains a line break or tab, which is not supported: $match"
-        failed=true
-        continue
-      fi
-      path=$(normalize_path "$match")
-      type=$(classify "$path")
-      case "$type" in
-        skill|plugin)
-          add_target "$path" "$type" "$targets" "$seen"
-          matched=$((matched + 1))
-          ;;
-        both)
-          echo "::error::$path has both $SKILL_MARKER and $PLUGIN_MARKER; a directory must be either a skill or an AI-tool plugin."
-          failed=true
-          matched=$((matched + 1))
-          ;;
-      esac
-    done
-    if [ "$matched" -eq 0 ]; then
-      echo "::error::The pattern '$entry' matched no skill or AI-tool plugin directories."
-      failed=true
-    fi
-  done <<< "${INPUT_PATHS:-}"
-
-  if [ "$count" -eq 0 ]; then
-    echo "::error::The 'paths' input is required. List skill or AI-tool plugin directories, one per line."
-    exit 1
-  fi
-  if $failed; then
+  if ! resolve_paths "${INPUT_PATHS:-}" "$targets" "skill plugin"; then
     exit 1
   fi
 
