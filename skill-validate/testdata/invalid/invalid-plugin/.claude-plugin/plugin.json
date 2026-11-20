@@ -1,0 +1,8 @@
+{
+  "name": "Invalid_Plugin",
+  "description": "Fixture AI-tool plugin with an invalid name",
+  "version": "0.1.0",
+  "author": {
+    "name": "Stacklok"
+  }
+}

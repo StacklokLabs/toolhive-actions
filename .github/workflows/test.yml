@@ -957,6 +957,211 @@ jobs:
         if: always()
         run: pkill -f '[t]hv serve' || true
 
+  test-skill-validate-action:
+    name: Test Skill Validate Action (thv ${{ matrix.thv-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Oldest supported release (string lists only), the first release
+        # with structured findings, and the newest release.
+        thv-version: [v0.48.0, v0.67.0, latest]
+    env:
+      FIXTURES: skill-validate/testdata
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install ToolHive ${{ matrix.thv-version }}
+        uses: ./install
+        with:
+          version: ${{ matrix.thv-version }}
+
+      - name: Validate skills and plugins with warnings
+        id: warnings
+        uses: ./skill-validate
+        with:
+          # Overlapping entries are validated once; not-a-skill is skipped by
+          # the glob.
+          paths: |
+            ${{ env.FIXTURES }}/skills/*
+              ${{ env.FIXTURES }}/plugins/*/
+
+            ./${{ env.FIXTURES }}/skills/valid-skill/
+
+      - name: Verify outputs and report
+        env:
+          THV_VERSION: ${{ matrix.thv-version }}
+          VALID: ${{ steps.warnings.outputs.valid }}
+          ERROR_COUNT: ${{ steps.warnings.outputs.error-count }}
+          WARNING_COUNT: ${{ steps.warnings.outputs.warning-count }}
+          REPORT_FILE: ${{ steps.warnings.outputs.report-file }}
+        run: |
+          fail() { echo "Error: $*"; exit 1; }
+          jq . "$REPORT_FILE"
+
+          [ "$VALID" = "true" ] || fail "valid output is '$VALID'"
+          [ "$ERROR_COUNT" = "0" ] || fail "error-count is '$ERROR_COUNT'"
+          [ "$(jq -r .valid "$REPORT_FILE")" = "true" ] || fail "report is not valid"
+          [ "$(jq '.results | length' "$REPORT_FILE")" = "5" ] || fail "expected 5 results"
+          jq -e '[.results[].path] == [
+              "skill-validate/testdata/skills/broken-refs",
+              "skill-validate/testdata/skills/long-skill",
+              "skill-validate/testdata/skills/valid-skill",
+              "skill-validate/testdata/plugins/plugin-broken-ref",
+              "skill-validate/testdata/plugins/valid-plugin"]' "$REPORT_FILE" >/dev/null \
+            || fail "unexpected result paths"
+          jq -e '[.results[].type] == ["skill", "skill", "skill", "plugin", "plugin"]' "$REPORT_FILE" >/dev/null \
+            || fail "unexpected result types"
+          jq -e '.results[] | select(.path | endswith("long-skill")) | .warnings | length == 1' "$REPORT_FILE" >/dev/null \
+            || fail "long-skill should have one warning"
+
+          if [ "$THV_VERSION" = "v0.48.0" ]; then
+            [ "$WARNING_COUNT" = "1" ] || fail "warning-count is '$WARNING_COUNT', expected 1"
+            jq -e 'all(.results[]; has("findings") | not)' "$REPORT_FILE" >/dev/null \
+              || fail "v0.48.0 should not report findings"
+            exit 0
+          fi
+
+          # v0.67.0 and later: structured findings with file and line.
+          if [ "$THV_VERSION" = "v0.67.0" ]; then
+            [ "$WARNING_COUNT" = "4" ] || fail "warning-count is '$WARNING_COUNT', expected 4"
+          fi
+          jq -e '.results[] | select(.path | endswith("broken-refs")) | .findings
+            | any(.rule == "ref-unresolved" and .file == "SKILL.md" and .line == 8)
+              and any(.rule == "script-direct-exec" and .file == "SKILL.md" and .line == 10)' \
+            "$REPORT_FILE" >/dev/null || fail "broken-refs findings are missing"
+          jq -e '.results[] | select(.path | endswith("plugin-broken-ref")) | .findings
+            | any(.rule == "ref-unresolved" and .file == "skills/helper/SKILL.md" and .line == 8)' \
+            "$REPORT_FILE" >/dev/null || fail "bundled skill finding is missing"
+          jq -e '.results[] | select(.path | endswith("long-skill")) | .findings
+            | any(.rule == "skill-md-too-long" and .line == 0)' \
+            "$REPORT_FILE" >/dev/null || fail "skill-md-too-long finding is missing"
+
+      - name: Verify the action stopped its daemon
+        run: |
+          if pgrep -f '[t]hv serve' >/dev/null; then
+            echo "Error: skill-validate did not stop its daemon"
+            exit 1
+          fi
+
+      - name: Fail on warnings when requested
+        id: fail-on-warnings
+        continue-on-error: true
+        uses: ./skill-validate
+        with:
+          paths: ${{ env.FIXTURES }}/skills/long-skill
+          fail-on-warnings: 'true'
+
+      - name: Fail on invalid skills and plugins
+        id: invalid
+        continue-on-error: true
+        uses: ./skill-validate
+        with:
+          paths: |
+            ${{ env.FIXTURES }}/skills/valid-skill
+            ${{ env.FIXTURES }}/invalid/long-description
+            ${{ env.FIXTURES }}/invalid/invalid-plugin
+
+      - name: Verify failing runs
+        env:
+          FAIL_ON_WARNINGS_OUTCOME: ${{ steps.fail-on-warnings.outcome }}
+          FAIL_ON_WARNINGS_VALID: ${{ steps.fail-on-warnings.outputs.valid }}
+          INVALID_OUTCOME: ${{ steps.invalid.outcome }}
+          INVALID_VALID: ${{ steps.invalid.outputs.valid }}
+          INVALID_ERROR_COUNT: ${{ steps.invalid.outputs.error-count }}
+          INVALID_REPORT: ${{ steps.invalid.outputs.report-file }}
+        run: |
+          fail() { echo "Error: $*"; exit 1; }
+          [ "$FAIL_ON_WARNINGS_OUTCOME" = "failure" ] || fail "warnings did not fail with fail-on-warnings"
+          [ "$FAIL_ON_WARNINGS_VALID" = "true" ] || fail "warnings alone should keep valid=true"
+          [ "$INVALID_OUTCOME" = "failure" ] || fail "invalid directories did not fail"
+          [ "$INVALID_VALID" = "false" ] || fail "valid output is '$INVALID_VALID'"
+          [ "$INVALID_ERROR_COUNT" = "3" ] || fail "error-count is '$INVALID_ERROR_COUNT', expected 3"
+          jq -e '[.results[] | {path: (.path | split("/") | last), valid}] == [
+              {path: "valid-skill", valid: true},
+              {path: "long-description", valid: false},
+              {path: "invalid-plugin", valid: false}]' "$INVALID_REPORT" >/dev/null \
+            || fail "every directory should be validated, including after a failure"
+          if pgrep -f '[t]hv serve' >/dev/null; then
+            fail "a failing run did not stop its daemon"
+          fi
+
+      - name: Reject recursive glob
+        id: recursive-glob
+        continue-on-error: true
+        uses: ./skill-validate
+        with:
+          paths: ${{ env.FIXTURES }}/**
+
+      - name: Reject glob without skills or plugins
+        id: empty-glob
+        continue-on-error: true
+        uses: ./skill-validate
+        with:
+          paths: ${{ env.FIXTURES }}/skills/not-*
+
+      - name: Reject directory that is not a skill or plugin
+        id: not-a-skill
+        continue-on-error: true
+        uses: ./skill-validate
+        with:
+          paths: ${{ env.FIXTURES }}/skills/not-a-skill
+
+      - name: Reject directory with both markers
+        id: both-markers
+        continue-on-error: true
+        uses: ./skill-validate
+        with:
+          paths: ${{ env.FIXTURES }}/invalid/both-markers
+
+      - name: Reject missing directory
+        id: missing
+        continue-on-error: true
+        uses: ./skill-validate
+        with:
+          paths: ${{ env.FIXTURES }}/skills/does-not-exist
+
+      - name: Reject blank paths
+        id: blank
+        continue-on-error: true
+        uses: ./skill-validate
+        with:
+          paths: "  \n\t\n"
+
+      - name: Reject invalid fail-on-warnings value
+        id: bad-flag
+        continue-on-error: true
+        uses: ./skill-validate
+        with:
+          paths: ${{ env.FIXTURES }}/skills/valid-skill
+          fail-on-warnings: 'TRUE'
+
+      - name: Verify rejected inputs
+        env:
+          OUTCOMES: >-
+            recursive-glob=${{ steps.recursive-glob.outcome }}
+            empty-glob=${{ steps.empty-glob.outcome }}
+            not-a-skill=${{ steps.not-a-skill.outcome }}
+            both-markers=${{ steps.both-markers.outcome }}
+            missing=${{ steps.missing.outcome }}
+            blank=${{ steps.blank.outcome }}
+            bad-flag=${{ steps.bad-flag.outcome }}
+        run: |
+          FAILED=false
+          for ENTRY in $OUTCOMES; do
+            if [ "${ENTRY#*=}" != "failure" ]; then
+              echo "Error: ${ENTRY%%=*} was not rejected (outcome: ${ENTRY#*=})"
+              FAILED=true
+            fi
+          done
+          $FAILED && exit 1
+          if pgrep -f '[t]hv serve' >/dev/null; then
+            echo "Error: a rejected run left a daemon running"
+            exit 1
+          fi
+          echo "All invalid inputs were rejected."
+
   lint-shell:
     name: Lint Shared Shell Scripts
     runs-on: ubuntu-latest
@@ -971,7 +1176,7 @@ jobs:
             sudo apt-get update -q && sudo apt-get install -y -q shellcheck
           fi
           shellcheck --version
-          shellcheck lib/*.sh
+          shellcheck lib/*.sh skill-validate/*.sh
 
   validate-action-metadata:
     name: Validate Action Metadata
@@ -1024,3 +1229,9 @@ jobs:
           echo "Validating lockfile-verify/action.yml..."
           yq eval '.' lockfile-verify/action.yml > /dev/null
           echo "✓ lockfile-verify/action.yml is valid"
+
+      - name: Validate skill-validate/action.yml
+        run: |
+          echo "Validating skill-validate/action.yml..."
+          yq eval '.' skill-validate/action.yml > /dev/null
+          echo "✓ skill-validate/action.yml is valid"
