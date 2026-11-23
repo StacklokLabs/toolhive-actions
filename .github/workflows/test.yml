@@ -2170,7 +2170,8 @@ jobs:
         uses: ./skill-build
         with:
           path: skills-publish/testdata/skills/alpha
-          tags: ghcr.io/stacklok/toolhive-actions-ci/alpha:must-not-build
+          # A closed local port, so a later permission change cannot make this push.
+          tags: 127.0.0.1:9/ci/alpha:must-not-build
           push: 'true'
 
       - name: Refuse plugin push without an OIDC token
@@ -2179,7 +2180,7 @@ jobs:
         uses: ./ai-plugin-build
         with:
           path: skills-publish/testdata/plugins/gamma
-          tags: ghcr.io/stacklok/toolhive-actions-ci/gamma:must-not-build
+          tags: 127.0.0.1:9/ci/gamma:must-not-build
           push: 'true'
 
       - name: Reject a push value that is not exactly true or false
@@ -2188,7 +2189,7 @@ jobs:
         uses: ./skill-build
         with:
           path: skills-publish/testdata/skills/alpha
-          tags: ghcr.io/stacklok/toolhive-actions-ci/alpha:must-not-build
+          tags: 127.0.0.1:9/ci/alpha:must-not-build
           push: 'TRUE'
 
       - name: Refuse to build an invalid skill
@@ -2238,6 +2239,50 @@ jobs:
       - name: Start ToolHive Daemon for Build Listing Checks
         id: daemon
         run: bash ./lib/daemon.sh start
+
+      - name: Refuse each guarded run for its own reason
+        env:
+          TOOLHIVE_API_URL: ${{ steps.daemon.outputs.url }}
+        run: |
+          FAILED=false
+          # Runs one inline step of an action with the given overrides, as the
+          # runner does; it must fail with the exact error.
+          refuse() {
+            local action="$1" step="$2" name="$3" expected="$4"
+            shift 4
+            yq ".runs.steps[] | select(.name == \"$step\") | .run" "$action/action.yml" > "$RUNNER_TEMP/step.sh"
+            if env GITHUB_ACTION_PATH="$GITHUB_WORKSPACE/$action" GITHUB_OUTPUT=/dev/null \
+              INPUT_TAG= INPUT_TAGS=127.0.0.1:9/ci/x:must-not-build INPUT_PUSH=false "$@" \
+              bash --noprofile --norc -eo pipefail "$RUNNER_TEMP/step.sh" > "$RUNNER_TEMP/refuse.log" 2>&1; then
+              cat "$RUNNER_TEMP/refuse.log"
+              echo "Error: $name was accepted"
+              FAILED=true
+            elif ! grep -Fq -- "$expected" "$RUNNER_TEMP/refuse.log"; then
+              cat "$RUNNER_TEMP/refuse.log"
+              echo "Error: $name failed without the expected error: $expected"
+              FAILED=true
+            fi
+          }
+          NO_OIDC="::error::Pushing signs artifacts with the job's GitHub OIDC token, but this job cannot request one. Add 'permissions: id-token: write' to the job."
+          refuse skill-build "Check Inputs and Prerequisites" skill-push "$NO_OIDC" \
+            INPUT_PATH=skills-publish/testdata/skills/alpha INPUT_PUSH=true
+          refuse ai-plugin-build "Check Inputs and Prerequisites" plugin-push "$NO_OIDC" \
+            INPUT_PATH=skills-publish/testdata/plugins/gamma INPUT_PUSH=true
+          refuse skill-build "Check Inputs and Prerequisites" skill-push-case \
+            "::error::The 'push' input must be exactly push: 'true' or push: 'false'." \
+            INPUT_PATH=skills-publish/testdata/skills/alpha INPUT_PUSH=TRUE
+          refuse skill-build "Check Inputs and Prerequisites" line-break-path \
+            "::error::The 'path' input must not contain a tab or line break." \
+            INPUT_PATH=$'skills-publish/testdata/skills/alpha\nother'
+          # Validation annotates the finding on the skill's own file.
+          refuse skill-build "Validate Skill" invalid-skill \
+            "::error file=skill-validate/testdata/invalid/long-description/SKILL.md" \
+            INPUT_PATH=skill-validate/testdata/invalid/long-description
+          refuse ai-plugin-build "Validate AI Plugin" invalid-plugin \
+            "::error file=skill-validate/testdata/invalid/invalid-plugin/" \
+            INPUT_PATH=skill-validate/testdata/invalid/invalid-plugin
+          $FAILED && exit 1
+          echo "Every guarded run was refused for its own reason."
 
       - name: Verify digests, and that refused runs built nothing
         env:
