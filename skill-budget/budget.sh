@@ -125,6 +125,17 @@ measure_dir() {
       description_chars: $description_chars, directory_chars: $directory_chars}'
 }
 
+# True when a commit has a regular file at a path relative to the repository
+# root. Symlinks and submodules are not regular files.
+commit_has_regular_file() {
+  local entry
+  entry=$(git -C "$1" ls-tree "$2" -- "$3" 2>/dev/null) || return 1
+  case "${entry%% *}" in
+    100644|100755) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Prints the metrics of a skill directory at a commit as JSON. Arguments:
 # repository, commit, directory path relative to the repository root (empty
 # or ending in /), scratch directory. Only regular files are written, so
@@ -179,8 +190,8 @@ record_skill() {
 }
 
 # Prints "<path>\t<repository>\t<prefix>" for each directory that matches a
-# single-level glob, had a SKILL.md at the base commit, and is no longer a
-# skill. The path is spelled like the pattern.
+# single-level glob, had a SKILL.md file (not a symlink) at the base commit,
+# and is no longer a skill. The path is spelled like the pattern.
 base_matches() {
   local entry="$1" base="$2" lead rest seg repo prefix file dir rel candidate
   entry=$(paths_normalize "$entry")
@@ -221,6 +232,7 @@ base_matches() {
     [[ "$rel" == $rest ]] || continue
     if [ "$lead" = "." ]; then candidate="$rel"; else candidate="$lead/$rel"; fi
     [ -f "$candidate/SKILL.md" ] && continue
+    commit_has_regular_file "$repo" "$base" "$file" || continue
     printf '%s\t%s\t%s\n' "$candidate" "$repo" "$prefix$rel/"
   done < "$list"
   rm -f "$list"
@@ -258,8 +270,21 @@ measure() {
     exit 1
   fi
 
+  # ToolHive rejects symlinks in a skill directory, and a symlinked SKILL.md
+  # would be measured on disk but not at the base commit.
+  local type path linked=false
+  while IFS=$'\t' read -r type path; do
+    if [ -L "$path/SKILL.md" ]; then
+      echo "::error file=$path/SKILL.md::$path/SKILL.md is a symlink. ToolHive does not allow symlinks in a skill directory; replace it with the file."
+      linked=true
+    fi
+  done < "$targets"
+  if $linked; then
+    exit 1
+  fi
+
   local base_note="none" warned_unavailable=""
-  local type path current base_metrics base_status repo prefix
+  local current base_metrics base_status repo prefix
   while IFS=$'\t' read -r type path; do
     current=$(measure_dir "$path")
     base_metrics=null
@@ -269,7 +294,7 @@ measure() {
         && prefix=$(git -C "$path" rev-parse --show-prefix); then
         if git -C "$repo" cat-file -e "${base}^{commit}" 2>/dev/null; then
           base_note=available
-          if git -C "$repo" cat-file -e "${base}:${prefix}SKILL.md" 2>/dev/null; then
+          if commit_has_regular_file "$repo" "$base" "${prefix}SKILL.md"; then
             base_metrics=$(measure_commit "$repo" "$base" "$prefix" "$work_dir/base")
             base_status=found
           else

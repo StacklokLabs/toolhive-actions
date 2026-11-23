@@ -1778,6 +1778,29 @@ jobs:
           fi
           chmod 644 "$SKILL/SKILL.md"
 
+      - name: Refuse a symlinked SKILL.md
+        env:
+          REPO: ${{ runner.temp }}/budget-linked-skill-md
+        run: |
+          mkdir -p "$REPO/skills/linked" "$REPO/shared"
+          cp "$FIXTURES/small-skill/SKILL.md" "$REPO/shared/SKILL.md"
+          ln -s ../../shared/SKILL.md "$REPO/skills/linked/SKILL.md"
+          git -C "$REPO" init -q
+          git -C "$REPO" add -A
+          git -C "$REPO" -c user.name=ci -c user.email=ci@example.com commit -q -m base
+          base=$(git -C "$REPO" rev-parse HEAD)
+          for base_ref in "" "$base"; do
+            if GITHUB_OUTPUT=/dev/null INPUT_PATHS="$REPO/skills/*" INPUT_BASE_REF="$base_ref" \
+              bash ./skill-budget/budget.sh measure > "$RUNNER_TEMP/linked.log" 2>&1; then
+              cat "$RUNNER_TEMP/linked.log"
+              echo "Error: a symlinked SKILL.md was measured (base '$base_ref')"
+              exit 1
+            fi
+            cat "$RUNNER_TEMP/linked.log"
+            grep -Fq "::error file=$REPO/skills/linked/SKILL.md::" "$RUNNER_TEMP/linked.log" \
+              || { echo "Error: no error names the symlinked SKILL.md (base '$base_ref')"; exit 1; }
+          done
+
       - name: Verify deltas
         env:
           FAIL_OUTCOME: ${{ steps.fail-over-budget.outcome }}

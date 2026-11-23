@@ -30,7 +30,7 @@ The action needs no ToolHive installation: it reads the files with `jq`, `yq` an
 | `comment-key` | Identifies the sticky comment, so several budget reports can share a pull request | No | `default` |
 | `github-token` | Token for the comment; needs `pull-requests: write` | No | `github.token` |
 
-`paths` follows the same rules as [`skill-validate`](../skill-validate/README.md), except that only skills (directories with a `SKILL.md`) are accepted. Globs skip AI-tool plugins.
+`paths` follows the same rules as [`skill-validate`](../skill-validate/README.md), except that only skills (directories with a `SKILL.md`) are accepted. Globs skip AI-tool plugins. A skill whose `SKILL.md` is a symlink fails the action, because ToolHive does not allow symlinks in a skill directory.
 
 `max-skill-lines` overlaps with ToolHive's own warning for a `SKILL.md` over 500 lines. Use it to set a different limit for your repository.
 
