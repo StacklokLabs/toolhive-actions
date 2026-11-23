@@ -34,7 +34,8 @@ build_one() {
   local kind="$1" path="$2" reference
   shift 2
   echo "Building $LABEL from $path..." >&2
-  reference=$(thv "$kind" build "$path" "$@" | tail -n 1)
+  # Callers loop over files on stdin; thv must not consume them.
+  reference=$(thv "$kind" build "$path" "$@" < /dev/null | tail -n 1)
   if [ -z "$reference" ]; then
     echo "::error::$CAPITALIZED_LABEL build returned an empty reference." >&2
     exit 1
@@ -69,7 +70,7 @@ push() {
   local reference
   for reference in "$@"; do
     echo "Pushing $reference..."
-    if ! thv "$kind" push "$reference"; then
+    if ! thv "$kind" push "$reference" < /dev/null; then
       echo "::error::Failed to push $reference."
       exit 1
     fi
