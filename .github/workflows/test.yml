@@ -1771,12 +1771,16 @@ jobs:
           fi
           mkdir -p "$(dirname "$SKILL")"
           cp -R "$FIXTURES/small-skill" "$SKILL"
-          chmod 000 "$SKILL/SKILL.md"
-          if GITHUB_OUTPUT=/dev/null INPUT_PATHS="$SKILL" bash ./skill-budget/budget.sh measure; then
+          chmod 000 "$SKILL/references/notes.md"
+          if GITHUB_OUTPUT=/dev/null INPUT_PATHS="$SKILL" bash ./skill-budget/budget.sh measure > "$RUNNER_TEMP/unreadable.log" 2>&1; then
+            cat "$RUNNER_TEMP/unreadable.log"
             echo "Error: an unreadable file was skipped instead of failing"
             exit 1
           fi
-          chmod 644 "$SKILL/SKILL.md"
+          cat "$RUNNER_TEMP/unreadable.log"
+          chmod 644 "$SKILL/references/notes.md"
+          grep -Fq "::error::Could not read $SKILL/references/notes.md." "$RUNNER_TEMP/unreadable.log" \
+            || { echo "Error: the unreadable file was not named"; exit 1; }
 
       - name: Refuse a symlinked SKILL.md
         env:
