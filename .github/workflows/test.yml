@@ -1399,6 +1399,33 @@ jobs:
           tags: must-not-build
           push: 'TRUE'
 
+      - name: Copy a skill to directories with names OCI paths reject
+        run: |
+          for NAME in MySkill 'my:skill'; do
+            mkdir -p "$RUNNER_TEMP/bad-names-$NAME"
+            cp -R "$FIXTURES/skills/alpha" "$RUNNER_TEMP/bad-names-$NAME/$NAME"
+          done
+
+      - name: Reject an uppercase directory name
+        id: uppercase-name
+        continue-on-error: true
+        uses: ./skills-publish
+        with:
+          root: ${{ runner.temp }}/bad-names-MySkill
+          registry-prefix: ${{ env.SKILLS_PREFIX }}
+          tags: must-not-build
+          validate: 'false'
+
+      - name: Reject a directory name with a colon
+        id: colon-name
+        continue-on-error: true
+        uses: ./skills-publish
+        with:
+          root: ${{ runner.temp }}/bad-names-my:skill
+          registry-prefix: ${{ env.SKILLS_PREFIX }}
+          tags: must-not-build
+          validate: 'false'
+
       - name: Verify refused runs
         env:
           OUTCOMES: >-
@@ -1412,6 +1439,8 @@ jobs:
             empty-root=${{ steps.empty-root.outcome }}
             bad-push=${{ steps.bad-push.outcome }}
             empty-validate=${{ steps.empty-validate.outcome }}
+            uppercase-name=${{ steps.uppercase-name.outcome }}
+            colon-name=${{ steps.colon-name.outcome }}
         run: |
           FAILED=false
           for ENTRY in $OUTCOMES; do

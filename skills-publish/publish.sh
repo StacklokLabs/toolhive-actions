@@ -25,6 +25,9 @@ readonly PLUGIN_MARKER=".claude-plugin/plugin.json"
 # particular pull_request, pull_request_target and workflow_run.
 readonly TRUSTED_EVENTS="push release workflow_dispatch schedule"
 
+# One component of an OCI repository path, from the distribution spec.
+readonly OCI_COMPONENT='^[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*$'
+
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)"
 readonly LIB_DIR
 
@@ -140,8 +143,9 @@ discover_root() {
       echo "::warning::Skipping $dir: no $marker."
       continue
     fi
-    if [[ "$dir" =~ [[:space:]] ]]; then
-      echo "::error::Directory names must not contain whitespace: $dir"
+    # The name becomes the last component of an OCI repository path.
+    if ! [[ "$name" =~ $OCI_COMPONENT ]]; then
+      echo "::error::$dir cannot be published: the directory name becomes part of the OCI repository path, so it must be lowercase letters and digits separated by '.', '_', '__' or '-'."
       exit 1
     fi
     printf '%s\t%s\t%s\t%s\n' "$type" "$name" "$dir" "$prefix" >> "$targets"

@@ -39,6 +39,7 @@ Builds are reproducible: an unchanged skill gets the same digest under every tag
 | `validate` | Validate every directory before building; accepts exactly `'true'` or `'false'`, and an empty value is rejected | No | `true` |
 
 - **Prefixes** must be lowercase, include a registry and a path, and have no tag, digest or trailing `/`. GitHub owner and repository names can contain capitals, but OCI paths can't, so lowercase `github.repository` yourself before passing it.
+- **Directory names** become the last part of the OCI repository path, so they must be lowercase letters and digits separated by `.`, `_`, `__` or `-`. The action fails on any other name before building.
 - **Shared prefix:** when skills and plugins share a prefix, a skill and a plugin with the same directory name would overwrite each other, so the action fails before building. Set `plugins-registry-prefix` to keep them apart.
 - **`tags`** entries are trimmed, and blank lines are ignored. Each must be a plain OCI tag (`[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}`), not a full reference. Duplicates are rejected.
 
