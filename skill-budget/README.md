@@ -8,8 +8,8 @@ Agents load every skill's `description` in every session, load a skill's `SKILL.
 |--------|------------------|
 | SKILL.md tokens | Estimated tokens of `SKILL.md`, checked against `max-skill-tokens` |
 | SKILL.md lines | Lines of `SKILL.md`, checked against `max-skill-lines` |
-| Directory tokens | Estimated tokens of every text file in the skill directory; binary files, symlinks and submodules are skipped |
-| Description tokens | Estimated tokens of the frontmatter `description` |
+| Directory tokens | Estimated tokens of the text files in the skill directory. In a Git repository, ignored files such as dependencies and build output don't count; binary files, symlinks and submodules are skipped |
+| Description tokens | Estimated tokens of the frontmatter `description`. A frontmatter that doesn't parse fails the action instead of counting as empty |
 
 A total of all description tokens follows the table.
 
@@ -29,6 +29,7 @@ The action needs no ToolHive installation: it reads the files with `jq`, `yq` an
 | `comment` | Post or update a sticky pull request comment; accepts exactly `'true'` or `'false'` | No | `false` |
 | `comment-key` | Identifies the sticky comment, so several budget reports can share a pull request | No | `default` |
 | `github-token` | Token for the comment; needs `pull-requests: write` | No | `github.token` |
+| `comment-author` | Login that `github-token` comments as, for example `my-app[bot]`. Needed only for a GitHub App token | No | - |
 
 `paths` follows the same rules as [`skill-validate`](../skill-validate/README.md), except that only skills (directories with a `SKILL.md`) are accepted. Globs skip AI-tool plugins. A skill whose `SKILL.md` is a symlink fails the action, because ToolHive does not allow symlinks in a skill directory.
 
@@ -40,11 +41,15 @@ A skill over a limit gets a warning annotation and an ❌ in the report. It fail
 
 On pull requests, each value shows its change against the base commit, for example `1250 (+80)`. A skill missing from the base is marked `(new)`. A skill that a glob in `paths` matched at the base commit but that is gone now is listed as deleted, with negative deltas, so removals lower the totals too.
 
-The base commit must be in the checkout. The default `actions/checkout` fetches a single commit, so use `fetch-depth: 0`. Without the base commit, the action warns and reports values without deltas; it never fetches. Outside pull requests `base-ref` is empty, so there are no deltas.
+The base commit must be in the checkout. The default `actions/checkout` fetches a single commit; on `pull_request` it checks out a merge commit whose first parent is the base, so `fetch-depth: 2` is enough. Without the base commit, the action warns and reports values without deltas; it never fetches. Outside pull requests `base-ref` is empty, so there are no deltas.
+
+Base files are read through the repository's checkout filters, such as `eol=crlf` in `.gitattributes`, so they compare byte for byte with the checked-out files.
+
+If you check out the pull request head instead (`ref: ${{ github.event.pull_request.head.sha }}`), deltas against the base tip also include commits that landed on the base branch after the branch point, as negative changes to skills the pull request didn't touch. Pass the merge base as `base-ref` in that case.
 
 ## Sticky comment
 
-With `comment: 'true'`, the action keeps one comment per pull request, found by the hidden marker `<!-- toolhive-skill-budget:<comment-key> -->` and written by the same account as the token, so it never overwrites someone else's comment:
+With `comment: 'true'`, the action keeps one comment per pull request, found by the hidden marker `<!-- toolhive-skill-budget:<comment-key> -->` and written by the same account as the token, so it never overwrites someone else's comment. A personal access token looks its account up, and the default `github.token` comments as `github-actions[bot]`. A GitHub App token can't look itself up, so set `comment-author` to the app's bot login; without it, the comment is skipped with a warning rather than posted again on every run.
 - It posts or updates the comment when a value changed or a limit is exceeded.
 - When nothing changed against the base, it updates an existing comment to "No budget changes" and posts nothing new.
 - When the base commit is not in the checkout, or `base-ref` is empty, there are no deltas. It then updates an existing comment with the current numbers and a note, rather than claiming nothing changed, and posts a new one only when a limit is exceeded.
@@ -92,7 +97,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          fetch-depth: 2
 
       - name: Report skill budget
         uses: StacklokLabs/toolhive-actions/skill-budget@v0

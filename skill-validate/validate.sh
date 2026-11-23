@@ -84,25 +84,6 @@ resolve() {
   write_output work-dir "$work_dir"
 }
 
-# Prints the directory prefix GitHub expects in an annotation: relative to the
-# workspace, and empty for the workspace itself. Relative paths are made
-# absolute first, so '.' and '../x' attach to the right file too.
-annotation_path() {
-  local path="$1" workspace="${GITHUB_WORKSPACE:-}"
-  if [[ "$path" != /* ]]; then
-    path=$(cd -- "$path" && pwd)
-  fi
-  if [ -n "$workspace" ]; then
-    workspace=$(cd -- "$workspace" && pwd)
-    if [ "$path" = "$workspace" ]; then
-      path=""
-    elif [[ "$path" == "$workspace"/* ]]; then
-      path="${path#"$workspace"/}"
-    fi
-  fi
-  printf '%s' "$path"
-}
-
 validate() {
   check_fail_on_warnings
   local work_dir="${WORK_DIR:?WORK_DIR is not set}"

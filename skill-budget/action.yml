@@ -37,6 +37,10 @@ inputs:
     description: "Token for the pull request comment; needs 'pull-requests: write'"
     required: false
     default: ${{ github.token }}
+  comment-author:
+    description: "Login that 'github-token' comments as, for example 'my-app[bot]'. Needed only for a GitHub App token, which cannot look up its own login"
+    required: false
+    default: ''
 
 outputs:
   report-markdown:
@@ -61,6 +65,7 @@ runs:
         INPUT_FAIL: ${{ inputs.fail }}
         INPUT_COMMENT: ${{ inputs.comment }}
         INPUT_COMMENT_KEY: ${{ inputs.comment-key }}
+        INPUT_COMMENT_AUTHOR: ${{ inputs.comment-author }}
       run: |
         for INPUT in "fail=$INPUT_FAIL" "comment=$INPUT_COMMENT"; do
           case "${INPUT#*=}" in
@@ -73,6 +78,10 @@ runs:
         done
         if ! [[ "$INPUT_COMMENT_KEY" =~ ^[A-Za-z0-9_.-]+$ ]]; then
           echo "::error::The 'comment-key' input may only contain letters, digits, '.', '_' and '-'."
+          exit 1
+        fi
+        if [ -n "$INPUT_COMMENT_AUTHOR" ] && ! [[ "$INPUT_COMMENT_AUTHOR" =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]]; then
+          echo "::error::The 'comment-author' input must be a GitHub login, for example 'my-app[bot]'."
           exit 1
         fi
 
@@ -94,7 +103,10 @@ runs:
         REPORT_FILE: ${{ steps.measure.outputs.report-file }}
         REPORT_MARKDOWN: ${{ steps.measure.outputs.report-markdown }}
         INPUT_COMMENT_KEY: ${{ inputs.comment-key }}
+        INPUT_COMMENT_AUTHOR: ${{ inputs.comment-author }}
         GH_TOKEN: ${{ inputs.github-token }}
+        # Only to tell whether GH_TOKEN is the job's own token.
+        JOB_TOKEN: ${{ github.token }}
       run: bash "$GITHUB_ACTION_PATH/budget.sh" comment
 
     - name: Enforce Limits

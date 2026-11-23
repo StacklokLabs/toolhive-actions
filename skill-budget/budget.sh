@@ -77,10 +77,17 @@ file_lines() {
   awk 'END { print NR }' "$1"
 }
 
-# Characters in the frontmatter description; 0 when there is none.
+# Characters in the frontmatter description; 0 when there is none. Fails
+# when the file starts a frontmatter that does not parse, so a broken
+# description is not counted as an empty one.
 description_chars() {
-  local description
-  description=$(yq --front-matter=extract '.description // ""' "$1" 2>/dev/null) || description=""
+  local first description
+  IFS= read -r first < "$1" || true
+  if [ "${first%$'\r'}" != "---" ]; then
+    echo 0
+    return 0
+  fi
+  description=$(yq --front-matter=extract '.description // ""' "$1" 2>/dev/null) || return 1
   printf '%s' "$description" | jq -R -s 'length'
 }
 
@@ -100,26 +107,71 @@ is_text_file() {
   esac
 }
 
-# Prints the metrics of a skill directory on disk as JSON. Counts regular
-# files only, like measure_commit: symlinks and nested repositories such as
-# submodules are skipped. -H follows a symlinked skill directory itself.
+# Prints the metrics of a skill directory as JSON. Arguments: directory,
+# side ('current' or 'base'), and the skill's path for messages.
+#
+# Counts regular files only: symlinks and nested repositories such as
+# submodules are skipped. On the current side, a directory in a Git work tree
+# counts what `git status` would show, read from disk: tracked files and
+# untracked ones that are not ignored, so build output and dependencies in
+# ignored directories never count. Elsewhere every file counts, and -H
+# follows a symlinked skill directory itself. The base side is a scratch copy
+# of the commit.
 measure_dir() {
-  local dir="$1" file directory_chars=0 chars list
-  # shellcheck disable=SC2016 # $1 expands in the inner sh.
-  list=$(list_to_file find -H "$dir" -mindepth 1 \
-    \( -name .git -o \( -type d -exec sh -c 'test -e "$1/.git"' sh {} \; \) \) -prune \
-    -o -type f -print0) || exit 1
-  while IFS= read -r -d '' file; do
-    if is_text_file "$file"; then
-      chars=$(file_chars "$file")
-      directory_chars=$((directory_chars + chars))
-    fi
-  done < "$list"
+  local dir="$1" side="$2" label="$3" file entry directory_chars=0 chars list others description
+  if [ "$side" = current ] && git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    # Entries are "<mode> <object> <stage>\t<path>", relative to the directory.
+    list=$(list_to_file git -C "$dir" ls-files -s -z -- .) || exit 1
+    others=$(list_to_file git -C "$dir" ls-files -o --exclude-standard -z -- .) || exit 1
+    # Tracked entries carry a mode; untracked ones are bare paths, and an
+    # untracked nested repository is listed as "<dir>/".
+    while IFS= read -r -d '' entry; do
+      case "${entry%% *}" in
+        100644|100755) file="$dir/${entry#*$'\t'}" ;;
+        *) continue ;;
+      esac
+      printf '%s\0' "$file"
+    done < "$list" > "$list.files"
+    while IFS= read -r -d '' entry; do
+      [[ "$entry" == */ ]] || printf '%s\0' "$dir/$entry"
+    done < "$others" >> "$list.files"
+    rm -f "$others"
+    while IFS= read -r -d '' file; do
+      # A file can be missing or replaced by a symlink on disk.
+      if [ ! -f "$file" ] || [ -L "$file" ]; then
+        continue
+      fi
+      if is_text_file "$file"; then
+        chars=$(file_chars "$file")
+        directory_chars=$((directory_chars + chars))
+      fi
+    done < "$list.files"
+    rm -f "$list.files"
+  else
+    # shellcheck disable=SC2016 # $1 expands in the inner sh.
+    list=$(list_to_file find -H "$dir" -mindepth 1 \
+      \( -name .git -o \( -type d -exec sh -c 'test -e "$1/.git"' sh {} \; \) \) -prune \
+      -o -type f -print0) || exit 1
+    while IFS= read -r -d '' file; do
+      if is_text_file "$file"; then
+        chars=$(file_chars "$file")
+        directory_chars=$((directory_chars + chars))
+      fi
+    done < "$list"
+  fi
   rm -f "$list"
+  if ! description=$(description_chars "$dir/SKILL.md"); then
+    if [ "$side" = current ]; then
+      echo "::error file=$(escape_property "$(annotation_path "$label")/SKILL.md")::The frontmatter of $(escape_data "$label")/SKILL.md does not parse, so its description cannot be measured." >&2
+      exit 1
+    fi
+    echo "::warning::The frontmatter of $(escape_data "$label")/SKILL.md does not parse at the base commit, so its description counts as 0 tokens there." >&2
+    description=0
+  fi
   jq -n -c \
     --argjson skill_md_chars "$(file_chars "$dir/SKILL.md")" \
     --argjson skill_md_lines "$(file_lines "$dir/SKILL.md")" \
-    --argjson description_chars "$(description_chars "$dir/SKILL.md")" \
+    --argjson description_chars "$description" \
     --argjson directory_chars "$directory_chars" \
     '{skill_md_chars: $skill_md_chars, skill_md_lines: $skill_md_lines,
       description_chars: $description_chars, directory_chars: $directory_chars}'
@@ -138,10 +190,12 @@ commit_has_regular_file() {
 
 # Prints the metrics of a skill directory at a commit as JSON. Arguments:
 # repository, commit, directory path relative to the repository root (empty
-# or ending in /), scratch directory. Only regular files are written, so
-# symlinks and submodules are skipped as on disk.
+# or ending in /), scratch directory, skill path for messages. Only regular
+# files are written, so symlinks and submodules are skipped as on disk.
+# Blobs go through the checkout filters (end-of-line conversion, LFS), so
+# they match the files in the work tree byte for byte.
 measure_commit() {
-  local repo="$1" commit="$2" prefix="$3" scratch="$4" entry meta file target list
+  local repo="$1" commit="$2" prefix="$3" scratch="$4" label="$5" entry meta file target list
   rm -rf "$scratch"
   mkdir -p "$scratch"
   # An empty prefix is the repository root, which git names "." here.
@@ -156,10 +210,10 @@ measure_commit() {
     esac
     target="$scratch/${file#"$prefix"}"
     mkdir -p "$(dirname "$target")"
-    git -C "$repo" cat-file blob "${meta##* }" > "$target" || exit 1
+    git -C "$repo" cat-file --filters "$commit:$file" > "$target" || exit 1
   done < "$list"
   rm -f "$list"
-  measure_dir "$scratch"
+  measure_dir "$scratch" base "$label"
 }
 
 # Prints one skill's report entry as JSON. Arguments: path, current metrics
@@ -189,6 +243,20 @@ record_skill() {
            "SKILL.md has \($now.skill_md_lines) lines (limit \($max_lines))" else empty end] end)}'
 }
 
+# True when a segment of a relative path starts with '.' but the matching
+# segment of the pattern does not: a shell glob would not match it.
+hidden_segment() {
+  local path="$1/" pattern="$2/"
+  while [ -n "$path" ]; do
+    if [[ "$path" == .* && "$pattern" != .* ]]; then
+      return 0
+    fi
+    path="${path#*/}"
+    pattern="${pattern#*/}"
+  done
+  return 1
+}
+
 # Prints "<path>\t<repository>\t<prefix>" for each directory that matches a
 # single-level glob, had a SKILL.md file (not a symlink) at the base commit,
 # and is no longer a skill. The path is spelled like the pattern.
@@ -208,9 +276,15 @@ base_matches() {
     rest="${rest#*/}"
   done
   [ -z "$lead" ] && lead="."
-  [ -d "$lead" ] || return 0
-  repo=$(git -C "$lead" rev-parse --show-toplevel 2>/dev/null) || return 0
-  prefix=$(git -C "$lead" rev-parse --show-prefix)
+  # Git keeps no empty directories, so deleting the last skill removes the
+  # literal directories too; find the repository from the nearest one left.
+  local existing="$lead" missing=""
+  while [ ! -d "$existing" ]; do
+    missing="${existing##*/}/$missing"
+    existing=$(dirname "$existing")
+  done
+  repo=$(git -C "$existing" rev-parse --show-toplevel 2>/dev/null) || return 0
+  prefix="$(git -C "$existing" rev-parse --show-prefix)$missing"
   git -C "$repo" cat-file -e "${base}^{commit}" 2>/dev/null || return 0
 
   local depth slashes list
@@ -230,6 +304,8 @@ base_matches() {
     [ "${#slashes}" -eq "$depth" ] || continue
     # shellcheck disable=SC2053 # The pattern is intentionally unquoted.
     [[ "$rel" == $rest ]] || continue
+    # Like the shell glob on disk, '*' does not match a leading dot.
+    hidden_segment "$rel" "$rest" && continue
     if [ "$lead" = "." ]; then candidate="$rel"; else candidate="$lead/$rel"; fi
     [ -f "$candidate/SKILL.md" ] && continue
     commit_has_regular_file "$repo" "$base" "$file" || continue
@@ -286,7 +362,7 @@ measure() {
   local base_note="none" warned_unavailable=""
   local current base_metrics base_status repo prefix
   while IFS=$'\t' read -r type path; do
-    current=$(measure_dir "$path")
+    current=$(measure_dir "$path" current "$path")
     base_metrics=null
     base_status=none
     if [ -n "$base" ]; then
@@ -295,7 +371,7 @@ measure() {
         if git -C "$repo" cat-file -e "${base}^{commit}" 2>/dev/null; then
           base_note=available
           if commit_has_regular_file "$repo" "$base" "${prefix}SKILL.md"; then
-            base_metrics=$(measure_commit "$repo" "$base" "$prefix" "$work_dir/base")
+            base_metrics=$(measure_commit "$repo" "$base" "$prefix" "$work_dir/base" "$path")
             base_status=found
           else
             base_status=new
@@ -303,7 +379,7 @@ measure() {
         else
           base_status=unavailable
           if [[ "$warned_unavailable" != *"|$repo|"* ]]; then
-            echo "::warning::Base commit $base is not available in $repo, so the report has no deltas. Check out with 'fetch-depth: 0' to compare against the base."
+            echo "::warning::Base commit $base is not available in $repo, so the report has no deltas. On pull_request, check out with 'fetch-depth: 2' to compare against the base."
             warned_unavailable="${warned_unavailable}|$repo|"
           fi
         fi
@@ -338,7 +414,7 @@ measure() {
     [[ "$seen_deleted" == *$'\n'"$path"$'\n'* ]] && continue
     seen_deleted="${seen_deleted}${path}"$'\n'
     base_note=available
-    base_metrics=$(measure_commit "$repo" "$base" "$prefix" "$work_dir/base")
+    base_metrics=$(measure_commit "$repo" "$base" "$prefix" "$work_dir/base" "$path")
     record_skill "$path" null "$base_metrics" deleted >> "$results"
   done < "$deleted"
 
@@ -379,7 +455,10 @@ measure() {
   over_budget=$(jq -r '.over_budget' "$report")
   changed=$(jq -r '.changed' "$report")
 
-  jq -r '.skills[] | . as $s | .breaches[] | "::warning file=\($s.path)/SKILL.md,title=Skill budget::\(.)"' "$report"
+  local breach_path breach
+  while IFS=$'\t' read -r breach_path breach; do
+    echo "::warning file=$(escape_property "$(annotation_path "$breach_path")/SKILL.md"),title=Skill budget::$(escape_data "$breach")"
+  done < <(jq -r '.skills[] | . as $s | .breaches[] | "\($s.path)\t\(.)"' "$report")
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     printf '%s\n' "$markdown" >> "$GITHUB_STEP_SUMMARY"
   fi
@@ -421,14 +500,26 @@ render_markdown() {
   ' "$1"
 }
 
-# Prints the login of the GITHUB_TOKEN or token owner. Installation tokens
-# cannot read /user, so fall back to the Actions bot that GITHUB_TOKEN posts as.
+# Prints the login that GH_TOKEN comments as: INPUT_COMMENT_AUTHOR when
+# given, else the token owner. Installation tokens, the job's own included,
+# cannot look themselves up; the job's token (JOB_TOKEN) always comments as
+# the Actions bot, but another app's login is unknown, so this fails.
 token_login() {
   local login
+  if [ -n "${INPUT_COMMENT_AUTHOR:-}" ]; then
+    printf '%s' "$INPUT_COMMENT_AUTHOR"
+    return 0
+  fi
   login=$(gh api graphql -f query='{ viewer { login } }' --jq .data.viewer.login 2>/dev/null) \
     || login=$(gh api user --jq .login 2>/dev/null) \
     || login=""
-  printf '%s' "${login:-github-actions[bot]}"
+  if [ -n "$login" ]; then
+    printf '%s' "$login"
+  elif [ -n "${JOB_TOKEN:-}" ] && [ "$GH_TOKEN" = "$JOB_TOKEN" ]; then
+    printf '%s' 'github-actions[bot]'
+  else
+    return 1
+  fi
 }
 
 comment() {
@@ -463,7 +554,10 @@ comment() {
 
   local repo="$GITHUB_REPOSITORY" existing errors comments login
   errors=$(mktemp)
-  login=$(token_login)
+  if ! login=$(token_login); then
+    echo "::warning::Skipping the budget comment: cannot tell which account 'github-token' comments as, so an earlier comment could not be found and would be posted again on every run. Set 'comment-author' to that login, for example 'my-app[bot]'."
+    return 0
+  fi
   echo "Looking for a budget comment by $login."
   if ! comments=$(gh api --paginate "repos/$repo/issues/$pr/comments" 2>"$errors"); then
     comment_failed "$errors" "read comments"
