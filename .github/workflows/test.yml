@@ -1562,6 +1562,594 @@ jobs:
           DAEMON_STARTED: ${{ steps.daemon.outputs.started }}
         run: bash ./lib/daemon.sh stop
 
+  test-skill-budget-action:
+    name: Test Skill Budget Action
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The sticky comment test posts, updates and deletes a real comment.
+      pull-requests: write
+    env:
+      FIXTURES: skill-budget/testdata
+      # Same-repository pull requests can comment; forks and other events
+      # check the skip path instead.
+      CAN_COMMENT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+      # Unique per run, so concurrent runs never see each other's comments.
+      COMMENT_KEY: ci-selftest-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Measure fixtures
+        id: measure
+        uses: ./skill-budget
+        with:
+          paths: ${{ env.FIXTURES }}/*
+          base-ref: ''
+
+      - name: Verify report
+        env:
+          OVER_BUDGET: ${{ steps.measure.outputs.over-budget }}
+          REPORT_FILE: ${{ steps.measure.outputs.report-file }}
+          REPORT_MARKDOWN: ${{ steps.measure.outputs.report-markdown }}
+        run: |
+          fail() { echo "Error: $*"; exit 1; }
+          jq . "$REPORT_FILE"
+          printf '%s\n' "$REPORT_MARKDOWN"
+          [ "$OVER_BUDGET" = "true" ] || fail "over-budget is '$OVER_BUDGET'"
+          jq -e '.skills | map({key: .name, value: .current}) | from_entries == {
+              "over-budget": {skill_md_tokens: 6790, skill_md_lines: 527, directory_tokens: 6790, description_tokens: 16},
+              "small-skill": {skill_md_tokens: 54, skill_md_lines: 10, directory_tokens: 67, description_tokens: 22}}' \
+            "$REPORT_FILE" >/dev/null || fail "unexpected measurements (the binary asset must not count)"
+          jq -e '.skills[] | select(.name == "over-budget") | .breaches | length == 2' "$REPORT_FILE" >/dev/null \
+            || fail "over-budget should breach both limits"
+          jq -e '.description_tokens == {current: 38, delta: null} and all(.skills[]; .delta == null)' "$REPORT_FILE" >/dev/null \
+            || fail "without a base there should be no deltas"
+          # shellcheck disable=SC2016 # Literal backticks in the Markdown row.
+          grep -Fq '| `skill-budget/testdata/over-budget` | 6790 | 527 | 6790 | 16 | ❌ Over budget |' <<< "$REPORT_MARKDOWN" \
+            || fail "markdown row for over-budget is missing"
+
+      - name: Fail when over budget and fail is set
+        id: fail-over-budget
+        continue-on-error: true
+        uses: ./skill-budget
+        with:
+          paths: ${{ env.FIXTURES }}/over-budget
+          base-ref: ''
+          fail: 'true'
+
+      - name: Pass with raised limits
+        id: raised-limits
+        uses: ./skill-budget
+        with:
+          paths: ${{ env.FIXTURES }}/over-budget
+          base-ref: ''
+          max-skill-tokens: '10000'
+          max-skill-lines: '1000'
+          fail: 'true'
+
+      - name: Create a repository with a base commit
+        id: repo
+        env:
+          REPO: ${{ runner.temp }}/budget-repo
+        run: |
+          mkdir -p "$REPO/skills"
+          cp -R "$FIXTURES/small-skill" "$REPO/skills/"
+          git -C "$REPO" init -q
+          git -C "$REPO" add -A
+          git -C "$REPO" -c user.name=ci -c user.email=ci@example.com commit -q -m base
+          echo "base=$(git -C "$REPO" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          printf '\nMore instructions added in this change, roughly forty chars.\n' >> "$REPO/skills/small-skill/SKILL.md"
+          mkdir -p "$REPO/skills/fresh"
+          printf -- '---\nname: fresh\ndescription: New skill.\n---\n# Fresh\n' > "$REPO/skills/fresh/SKILL.md"
+
+      - name: Measure against the base commit
+        id: delta
+        uses: ./skill-budget
+        with:
+          paths: ${{ runner.temp }}/budget-repo/skills/*
+          base-ref: ${{ steps.repo.outputs.base }}
+
+      - name: Measure against a missing base commit
+        id: missing-base
+        uses: ./skill-budget
+        with:
+          paths: ${{ runner.temp }}/budget-repo/skills/small-skill
+          base-ref: 0123456789abcdef0123456789abcdef01234567
+
+      - name: Create repositories with a deleted skill and a root skill
+        id: more-repos
+        env:
+          DELETED_REPO: ${{ runner.temp }}/budget-deleted
+          ROOT_REPO: ${{ runner.temp }}/budget-root
+        run: |
+          commit() {
+            git -C "$1" add -A
+            git -C "$1" -c user.name=ci -c user.email=ci@example.com commit -q -m "$2"
+          }
+          mkdir -p "$DELETED_REPO/skills/gone"
+          cp -R "$FIXTURES/small-skill" "$DELETED_REPO/skills/"
+          printf -- '---\nname: gone\ndescription: A skill that this change deletes.\n---\n# Gone\n' > "$DELETED_REPO/skills/gone/SKILL.md"
+          git -C "$DELETED_REPO" init -q
+          commit "$DELETED_REPO" base
+          echo "deleted-base=$(git -C "$DELETED_REPO" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          rm -rf "$DELETED_REPO/skills/gone"
+
+          mkdir -p "$ROOT_REPO"
+          cp "$FIXTURES/small-skill/SKILL.md" "$ROOT_REPO/"
+          git -C "$ROOT_REPO" init -q
+          commit "$ROOT_REPO" base
+          echo "root-base=$(git -C "$ROOT_REPO" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "More text here." >> "$ROOT_REPO/SKILL.md"
+
+      - name: Measure a deleted skill
+        id: deleted
+        uses: ./skill-budget
+        with:
+          paths: ${{ runner.temp }}/budget-deleted/skills/*
+          base-ref: ${{ steps.more-repos.outputs.deleted-base }}
+
+      - name: Measure a skill at the repository root
+        id: root
+        uses: ./skill-budget
+        with:
+          paths: ${{ runner.temp }}/budget-root
+          base-ref: ${{ steps.more-repos.outputs.root-base }}
+
+      - name: Verify deleted and root skills
+        env:
+          DELETED_REPORT: ${{ steps.deleted.outputs.report-file }}
+          DELETED_MARKDOWN: ${{ steps.deleted.outputs.report-markdown }}
+          ROOT_REPORT: ${{ steps.root.outputs.report-file }}
+        run: |
+          fail() { echo "Error: $*"; exit 1; }
+          jq . "$DELETED_REPORT" "$ROOT_REPORT"
+          jq -e '.skills | map({key: .name, value: {base_status, delta}}) | from_entries == {
+              gone: {base_status: "deleted", delta: {skill_md_tokens: -19, skill_md_lines: -5, directory_tokens: -19, description_tokens: -9}},
+              "small-skill": {base_status: "found", delta: {skill_md_tokens: 0, skill_md_lines: 0, directory_tokens: 0, description_tokens: 0}}}' \
+            "$DELETED_REPORT" >/dev/null || fail "unexpected deltas for a deleted skill"
+          jq -e '.description_tokens == {current: 22, delta: -9} and .changed' "$DELETED_REPORT" >/dev/null \
+            || fail "a deleted skill should lower the description total"
+          grep -Fq '| 0 (−19) | 0 (−5) | 0 (−19) | 0 (−9) | 🗑️ Deleted |' <<< "$DELETED_MARKDOWN" || fail "markdown row for the deleted skill is missing"
+          jq -e '.skills == [.skills[0]] and .skills[0].base_status == "found"
+              and .skills[0].delta == {skill_md_tokens: 4, skill_md_lines: 1, directory_tokens: 4, description_tokens: 0}' \
+            "$ROOT_REPORT" >/dev/null || fail "unexpected report for a root skill"
+
+      - name: Create a repository with symlinks and a submodule
+        id: links-repo
+        env:
+          REPO: ${{ runner.temp }}/budget-links
+          SUBMODULE: ${{ runner.temp }}/budget-submodule
+        run: |
+          commit() {
+            git -C "$1" add -A
+            git -C "$1" -c user.name=ci -c user.email=ci@example.com commit -q -m "$2"
+          }
+          mkdir -p "$SUBMODULE"
+          git -C "$SUBMODULE" init -q
+          echo "Vendored text that must not count." > "$SUBMODULE/notes.md"
+          commit "$SUBMODULE" vendored
+          mkdir -p "$REPO/skills" "$REPO/shared"
+          cp -R "$FIXTURES/small-skill" "$REPO/skills/"
+          cp -R "$FIXTURES/small-skill" "$REPO/shared/linked-skill"
+          ln -s ../../shared/linked-skill/SKILL.md "$REPO/skills/small-skill/link.md"
+          ln -s ../shared/linked-skill "$REPO/skills/linked-skill"
+          git -C "$REPO" init -q
+          git -C "$REPO" -c protocol.file.allow=always submodule add -q "$SUBMODULE" skills/small-skill/vendor
+          commit "$REPO" base
+          echo "base=$(git -C "$REPO" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Measure unchanged skills with symlinks and a submodule
+        id: links
+        uses: ./skill-budget
+        with:
+          paths: ${{ runner.temp }}/budget-links/skills/*
+          base-ref: ${{ steps.links-repo.outputs.base }}
+
+      - name: Verify symlinks and submodules give no deltas
+        env:
+          REPORT_FILE: ${{ steps.links.outputs.report-file }}
+        run: |
+          jq . "$REPORT_FILE"
+          jq -e '(.skills | map({key: .name, value: {current, base_status, delta}}) | from_entries) == {
+              "linked-skill": {current: {skill_md_tokens: 54, skill_md_lines: 10, directory_tokens: 67, description_tokens: 22},
+                base_status: "found", delta: {skill_md_tokens: 0, skill_md_lines: 0, directory_tokens: 0, description_tokens: 0}},
+              "small-skill": {current: {skill_md_tokens: 54, skill_md_lines: 10, directory_tokens: 67, description_tokens: 22},
+                base_status: "found", delta: {skill_md_tokens: 0, skill_md_lines: 0, directory_tokens: 0, description_tokens: 0}}}
+              and (.changed | not)' "$REPORT_FILE" >/dev/null \
+            || { echo "Error: symlinks or the submodule were counted, or counted differently at the base"; exit 1; }
+
+      - name: Fail on a file that cannot be read
+        id: unreadable
+        env:
+          SKILL: ${{ runner.temp }}/budget-unreadable/small-skill
+        run: |
+          # root reads any file, so the check needs a regular user.
+          if [ "$(id -u)" = "0" ]; then
+            echo "Running as root; skipping."
+            exit 0
+          fi
+          mkdir -p "$(dirname "$SKILL")"
+          cp -R "$FIXTURES/small-skill" "$SKILL"
+          chmod 000 "$SKILL/references/notes.md"
+          if GITHUB_OUTPUT=/dev/null INPUT_PATHS="$SKILL" bash ./skill-budget/budget.sh measure > "$RUNNER_TEMP/unreadable.log" 2>&1; then
+            cat "$RUNNER_TEMP/unreadable.log"
+            echo "Error: an unreadable file was skipped instead of failing"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/unreadable.log"
+          chmod 644 "$SKILL/references/notes.md"
+          grep -Fq "::error::Could not read $SKILL/references/notes.md." "$RUNNER_TEMP/unreadable.log" \
+            || { echo "Error: the unreadable file was not named"; exit 1; }
+
+      - name: Refuse a symlinked SKILL.md
+        env:
+          REPO: ${{ runner.temp }}/budget-linked-skill-md
+        run: |
+          mkdir -p "$REPO/skills/linked" "$REPO/shared"
+          cp "$FIXTURES/small-skill/SKILL.md" "$REPO/shared/SKILL.md"
+          ln -s ../../shared/SKILL.md "$REPO/skills/linked/SKILL.md"
+          git -C "$REPO" init -q
+          git -C "$REPO" add -A
+          git -C "$REPO" -c user.name=ci -c user.email=ci@example.com commit -q -m base
+          base=$(git -C "$REPO" rev-parse HEAD)
+          for base_ref in "" "$base"; do
+            if GITHUB_OUTPUT=/dev/null INPUT_PATHS="$REPO/skills/*" INPUT_BASE_REF="$base_ref" \
+              bash ./skill-budget/budget.sh measure > "$RUNNER_TEMP/linked.log" 2>&1; then
+              cat "$RUNNER_TEMP/linked.log"
+              echo "Error: a symlinked SKILL.md was measured (base '$base_ref')"
+              exit 1
+            fi
+            cat "$RUNNER_TEMP/linked.log"
+            grep -Fq "::error file=$REPO/skills/linked/SKILL.md::" "$RUNNER_TEMP/linked.log" \
+              || { echo "Error: no error names the symlinked SKILL.md (base '$base_ref')"; exit 1; }
+          done
+
+      - name: Count tracked files through checkout filters
+        run: |
+          fail() { echo "Error: $*"; exit 1; }
+          commit() {
+            git -C "$1" add -A
+            git -C "$1" -c user.name=ci -c user.email=ci@example.com commit -q -m "$2"
+          }
+          # Runs a measurement from a repository against its HEAD; prints the report path.
+          measure_head() {
+            local repo="$1" out="$RUNNER_TEMP/$2.out"
+            : > "$out"
+            (cd "$repo" && GITHUB_OUTPUT="$out" INPUT_PATHS='skills/*' INPUT_BASE_REF="$(git rev-parse HEAD)" \
+              bash "$GITHUB_WORKSPACE/skill-budget/budget.sh" measure) > "$RUNNER_TEMP/$2.log" 2>&1 \
+              || { cat "$RUNNER_TEMP/$2.log"; fail "$2: the measurement failed"; }
+            sed -n 's/^report-file=//p' "$out"
+          }
+          unchanged() { jq -e '(.changed | not) and all(.skills[]; .delta | to_entries | all(.value == 0))' "$1" >/dev/null; }
+
+          # Ignored files, such as dependencies an earlier step installed, are not part of the skill.
+          REPO="$RUNNER_TEMP/budget-untracked"
+          mkdir -p "$REPO/skills"
+          cp -R "$FIXTURES/small-skill" "$REPO/skills/"
+          echo 'node_modules/' > "$REPO/.gitignore"
+          git -C "$REPO" init -q
+          commit "$REPO" base
+          mkdir -p "$REPO/skills/small-skill/node_modules/dep"
+          head -c 20000 /dev/zero | tr '\0' 'x' > "$REPO/skills/small-skill/node_modules/dep/index.js"
+          REPORT=$(measure_head "$REPO" untracked)
+          unchanged "$REPORT" || { jq . "$REPORT"; fail "ignored files were counted"; }
+          # An untracked file that is not ignored is new content, as git status shows it.
+          echo "Notes that are not committed yet." > "$REPO/skills/small-skill/notes-draft.md"
+          REPORT=$(measure_head "$REPO" untracked-new)
+          jq -e '.skills[0].delta.directory_tokens > 0 and .changed' "$REPORT" >/dev/null \
+            || { jq . "$REPORT"; fail "an untracked file that is not ignored was not counted"; }
+
+          # A fresh clone with eol=crlf has CRLF files; the base blobs must be compared the same way.
+          REPO="$RUNNER_TEMP/budget-crlf"
+          mkdir -p "$REPO/skills"
+          cp -R "$FIXTURES/small-skill" "$REPO/skills/"
+          printf '*.md text eol=crlf\n' > "$REPO/.gitattributes"
+          git -C "$REPO" init -q
+          commit "$REPO" base
+          git clone -q "$REPO" "$REPO-clone"
+          grep -q $'\r$' "$REPO-clone/skills/small-skill/SKILL.md" || fail "the clone has no CRLF line endings"
+          REPORT=$(measure_head "$REPO-clone" crlf)
+          unchanged "$REPORT" || { jq . "$REPORT"; fail "checkout filters gave a delta on an unchanged skill"; }
+
+          # Deleting the last skill also removes skills/, which Git does not keep empty.
+          REPO="$RUNNER_TEMP/budget-last"
+          mkdir -p "$REPO/skills"
+          cp -R "$FIXTURES/small-skill" "$REPO/skills/only"
+          touch "$REPO/README.md"
+          git -C "$REPO" init -q
+          commit "$REPO" base
+          rm -rf "$REPO/skills"
+          REPORT=$(measure_head "$REPO" last)
+          jq -e '[.skills[] | {name, base_status}] == [{name: "only", base_status: "deleted"}]' "$REPORT" >/dev/null \
+            || { jq . "$REPORT"; fail "deleting the last skill was not reported as a deletion"; }
+
+          # '*' does not match a hidden directory on disk, so a deleted one is not listed either.
+          REPO="$RUNNER_TEMP/budget-hidden"
+          mkdir -p "$REPO/skills"
+          cp -R "$FIXTURES/small-skill" "$REPO/skills/"
+          cp -R "$FIXTURES/small-skill" "$REPO/skills/.draft"
+          git -C "$REPO" init -q
+          commit "$REPO" base
+          rm -rf "$REPO/skills/.draft"
+          REPORT=$(measure_head "$REPO" hidden)
+          jq -e '[.skills[].name] == ["small-skill"]' "$REPORT" >/dev/null \
+            || { jq . "$REPORT"; fail "a deleted hidden directory was listed"; }
+
+          # A frontmatter that does not parse fails the measurement, but only warns at the base.
+          REPO="$RUNNER_TEMP/budget-frontmatter"
+          mkdir -p "$REPO/skills"
+          cp -R "$FIXTURES/small-skill" "$REPO/skills/"
+          git -C "$REPO" init -q
+          commit "$REPO" base
+          printf -- '---\nname: small-skill\ndescription: [unclosed\n---\n# Small\n' > "$REPO/skills/small-skill/SKILL.md"
+          if (cd "$REPO" && GITHUB_OUTPUT=/dev/null INPUT_PATHS='skills/*' bash "$GITHUB_WORKSPACE/skill-budget/budget.sh" measure) \
+            > "$RUNNER_TEMP/frontmatter.log" 2>&1; then
+            cat "$RUNNER_TEMP/frontmatter.log"
+            fail "a frontmatter that does not parse was measured"
+          fi
+          cat "$RUNNER_TEMP/frontmatter.log"
+          grep -Fq '::The frontmatter of skills/small-skill/SKILL.md does not parse, so its description cannot be measured.' \
+            "$RUNNER_TEMP/frontmatter.log" || fail "no error for the frontmatter that does not parse"
+          commit "$REPO" broken
+          cp "$FIXTURES/small-skill/SKILL.md" "$REPO/skills/small-skill/SKILL.md"
+          measure_head "$REPO" fixed-frontmatter > /dev/null
+          grep -Fqx '::warning::The frontmatter of skills/small-skill/SKILL.md does not parse at the base commit, so its description counts as 0 tokens there.' \
+            "$RUNNER_TEMP/fixed-frontmatter.log" || fail "no warning for the frontmatter at the base"
+
+      - name: Find the comment of a GitHub App token
+        run: |
+          fail() { echo "Error: $*"; exit 1; }
+          OUT="$RUNNER_TEMP/comment-author"
+          mkdir -p "$OUT/bin"
+          # A gh whose token cannot look itself up, like an installation token. The
+          # pull request has one budget comment, written by my-app[bot].
+          cat > "$OUT/bin/gh" <<'EOF'
+          #!/usr/bin/env bash
+          echo "$*" >> "$GH_LOG"
+          case "$*" in
+            "api graphql"* | "api user"*) exit 1 ;;
+            "api --paginate "*) echo '[{"id": 42, "user": {"login": "my-app[bot]"}, "body": "<!-- toolhive-skill-budget:stub -->\nOld report"}]' ;;
+            "api -X PATCH "*) ;;
+            "api -X POST "*) echo 43 ;;
+            *) exit 2 ;;
+          esac
+          EOF
+          chmod +x "$OUT/bin/gh"
+          echo '{"pull_request": {"number": 7, "head": {"repo": {"full_name": "org/repo"}}}}' > "$OUT/event.json"
+          GITHUB_OUTPUT="$OUT/measure" INPUT_PATHS="$FIXTURES/over-budget" bash skill-budget/budget.sh measure > /dev/null
+          export PATH="$OUT/bin:$PATH" GH_LOG="$OUT/gh.log" GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$OUT/event.json"
+          export GITHUB_REPOSITORY=org/repo INPUT_COMMENT_KEY=stub GH_TOKEN=app-token
+          export REPORT_FILE="$(sed -n 's/^report-file=//p' "$OUT/measure")" REPORT_MARKDOWN="### Skill budget"
+          # Runs the comment phase with the given overrides; the log is <name>.log.
+          run_comment() {
+            local name="$1"
+            shift
+            : > "$GH_LOG"
+            env GITHUB_OUTPUT="$OUT/$name.out" "$@" bash skill-budget/budget.sh comment > "$OUT/$name.log" 2>&1 \
+              || { cat "$OUT/$name.log"; fail "$name: the comment phase failed"; }
+            cat "$OUT/$name.log"
+          }
+
+          run_comment unknown JOB_TOKEN=job-token
+          grep -Fq "::warning::Skipping the budget comment: cannot tell which account 'github-token' comments as" "$OUT/unknown.log" \
+            || fail "an unknown author did not skip the comment with a warning"
+          if grep -q -- '-X ' "$GH_LOG"; then fail "a comment was written for an unknown author"; fi
+
+          run_comment author JOB_TOKEN=job-token INPUT_COMMENT_AUTHOR='my-app[bot]'
+          grep -q '^api -X PATCH repos/org/repo/issues/comments/42 ' "$GH_LOG" || fail "comment-author did not update the app's comment"
+          if grep -q -- '-X POST' "$GH_LOG"; then fail "comment-author posted a second comment"; fi
+
+          run_comment job-token JOB_TOKEN=app-token
+          grep -Fqx 'Looking for a budget comment by github-actions[bot].' "$OUT/job-token.log" \
+            || fail "the job's own token did not fall back to github-actions[bot]"
+          grep -q '^api -X POST repos/org/repo/issues/7/comments ' "$GH_LOG" || fail "the job's token did not post its own comment"
+
+      - name: Verify deltas
+        env:
+          FAIL_OUTCOME: ${{ steps.fail-over-budget.outcome }}
+          RAISED_OVER_BUDGET: ${{ steps.raised-limits.outputs.over-budget }}
+          DELTA_REPORT: ${{ steps.delta.outputs.report-file }}
+          DELTA_MARKDOWN: ${{ steps.delta.outputs.report-markdown }}
+          MISSING_REPORT: ${{ steps.missing-base.outputs.report-file }}
+        run: |
+          fail() { echo "Error: $*"; exit 1; }
+          [ "$FAIL_OUTCOME" = "failure" ] || fail "fail: 'true' did not fail an over-budget skill"
+          [ "$RAISED_OVER_BUDGET" = "false" ] || fail "raised limits still report over budget"
+          jq . "$DELTA_REPORT"
+          jq -e '.skills | map({key: .name, value: {base_status, delta}}) | from_entries == {
+              fresh: {base_status: "new", delta: {skill_md_tokens: 13, skill_md_lines: 5, directory_tokens: 13, description_tokens: 3}},
+              "small-skill": {base_status: "found", delta: {skill_md_tokens: 15, skill_md_lines: 2, directory_tokens: 15, description_tokens: 0}}}' \
+            "$DELTA_REPORT" >/dev/null || fail "unexpected deltas"
+          jq -e '.description_tokens == {current: 25, delta: 3} and .changed' "$DELTA_REPORT" >/dev/null \
+            || fail "unexpected description total"
+          grep -Fq '| 69 (+15) | 12 (+2) | 82 (+15) | 22 | ✅ |' <<< "$DELTA_MARKDOWN" || fail "markdown deltas missing"
+          jq -e 'all(.skills[]; .base_status == "unavailable" and .delta == null) and (.changed | not)' \
+            "$MISSING_REPORT" >/dev/null || fail "a missing base should give no deltas"
+
+      - name: Post the sticky comment
+        id: post
+        if: env.CAN_COMMENT == 'true'
+        uses: ./skill-budget
+        with:
+          paths: ${{ env.FIXTURES }}/over-budget
+          base-ref: ''
+          comment: 'true'
+          comment-key: ${{ env.COMMENT_KEY }}
+
+      - name: Update the sticky comment
+        id: comment
+        uses: ./skill-budget
+        with:
+          paths: ${{ env.FIXTURES }}/over-budget
+          base-ref: ''
+          comment: 'true'
+          comment-key: ${{ env.COMMENT_KEY }}
+
+      - name: Verify the sticky comment shows the breach
+        if: env.CAN_COMMENT == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          POSTED_ID: ${{ steps.post.outputs.comment-id }}
+          UPDATED_ID: ${{ steps.comment.outputs.comment-id }}
+        run: |
+          if [ -z "$POSTED_ID" ] || [ "$POSTED_ID" != "$UPDATED_ID" ]; then
+            echo "Error: the second run did not update the posted comment (posted '$POSTED_ID', updated '$UPDATED_ID')"
+            exit 1
+          fi
+          BODY=$(gh api "repos/$GITHUB_REPOSITORY/issues/comments/$POSTED_ID" --jq .body)
+          printf '%s\n' "$BODY"
+          grep -Fq '❌ Over budget' <<< "$BODY" || { echo "Error: the comment does not show the breach"; exit 1; }
+
+      # The breach is fixed, but the base commit is missing: the comment must
+      # show the current numbers rather than keep the stale breach.
+      - name: Refresh the sticky comment when the base is unavailable
+        id: refresh-unavailable
+        if: env.CAN_COMMENT == 'true'
+        uses: ./skill-budget
+        with:
+          paths: ${{ runner.temp }}/budget-repo/skills/small-skill
+          base-ref: 0123456789abcdef0123456789abcdef01234567
+          comment: 'true'
+          comment-key: ${{ env.COMMENT_KEY }}
+
+      - name: Verify the refreshed comment has current numbers
+        if: env.CAN_COMMENT == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          POSTED_ID: ${{ steps.post.outputs.comment-id }}
+          REFRESHED_ID: ${{ steps.refresh-unavailable.outputs.comment-id }}
+        run: |
+          [ "$REFRESHED_ID" = "$POSTED_ID" ] || { echo "Error: expected comment $POSTED_ID to be updated, got '$REFRESHED_ID'"; exit 1; }
+          BODY=$(gh api "repos/$GITHUB_REPOSITORY/issues/comments/$POSTED_ID" --jq .body)
+          printf '%s\n' "$BODY"
+          ! grep -Fq 'Over budget' <<< "$BODY" || { echo "Error: the stale breach is still shown"; exit 1; }
+          ! grep -Fq 'No budget changes' <<< "$BODY" || { echo "Error: claimed no changes without a base"; exit 1; }
+          grep -Fq 'small-skill' <<< "$BODY" || { echo "Error: the current numbers are missing"; exit 1; }
+          grep -Fq 'base commit is not in the checkout' <<< "$BODY" || { echo "Error: the missing-base note is missing"; exit 1; }
+
+      - name: Refresh the sticky comment with an empty base-ref
+        id: refresh-none
+        if: env.CAN_COMMENT == 'true'
+        uses: ./skill-budget
+        with:
+          paths: ${{ runner.temp }}/budget-repo/skills/small-skill
+          # An unset repository variable expands to an empty string.
+          base-ref: ${{ vars.TOOLHIVE_ACTIONS_UNSET_VARIABLE }}
+          comment: 'true'
+          comment-key: ${{ env.COMMENT_KEY }}
+
+      - name: Report no changes against an available base
+        id: unchanged
+        if: env.CAN_COMMENT == 'true'
+        uses: ./skill-budget
+        with:
+          paths: ${{ runner.temp }}/budget-deleted/skills/small-skill
+          base-ref: ${{ steps.more-repos.outputs.deleted-base }}
+          comment: 'true'
+          comment-key: ${{ env.COMMENT_KEY }}
+
+      - name: Verify exactly one sticky comment
+        if: env.CAN_COMMENT == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          POSTED_ID: ${{ steps.post.outputs.comment-id }}
+          NONE_ID: ${{ steps.refresh-none.outputs.comment-id }}
+          UNCHANGED_ID: ${{ steps.unchanged.outputs.comment-id }}
+        run: |
+          [ "$NONE_ID" = "$POSTED_ID" ] || { echo "Error: an empty base-ref did not refresh the comment"; exit 1; }
+          [ "$UNCHANGED_ID" = "$POSTED_ID" ] || { echo "Error: no changes did not update the comment"; exit 1; }
+          COMMENTS=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" | jq -s --arg marker "<!-- toolhive-skill-budget:$COMMENT_KEY -->" \
+            'add // [] | map(select(.body | startswith($marker)))')
+          printf '%s\n' "$COMMENTS" | jq '[.[] | {id, body: .body[0:300]}]'
+          if [ "$(printf '%s' "$COMMENTS" | jq 'length')" != "1" ]; then
+            echo "Error: expected exactly one sticky comment"
+            exit 1
+          fi
+          if ! printf '%s' "$COMMENTS" | jq -e '.[0].body | contains("No budget changes against the base.")' >/dev/null; then
+            echo "Error: the comment does not report no changes against the base"
+            exit 1
+          fi
+
+      - name: Delete the sticky comment
+        if: always() && env.CAN_COMMENT == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          POSTED_ID: ${{ steps.post.outputs.comment-id }}
+          UPDATED_ID: ${{ steps.comment.outputs.comment-id }}
+        run: |
+          # Only the comment this run created.
+          for ID in $(printf '%s\n%s\n' "$POSTED_ID" "$UPDATED_ID" | sort -u); do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/comments/$ID"
+            echo "Deleted comment $ID"
+          done
+
+      - name: Reject invalid fail value
+        id: bad-fail
+        continue-on-error: true
+        uses: ./skill-budget
+        with:
+          paths: ${{ env.FIXTURES }}/small-skill
+          fail: 'yes'
+
+      - name: Reject invalid comment key
+        id: bad-key
+        continue-on-error: true
+        uses: ./skill-budget
+        with:
+          paths: ${{ env.FIXTURES }}/small-skill
+          comment-key: 'two words'
+
+      - name: Reject invalid comment author
+        id: bad-author
+        continue-on-error: true
+        uses: ./skill-budget
+        with:
+          paths: ${{ env.FIXTURES }}/small-skill
+          comment-author: 'my app'
+
+      - name: Reject invalid token limit
+        id: bad-limit
+        continue-on-error: true
+        uses: ./skill-budget
+        with:
+          paths: ${{ env.FIXTURES }}/small-skill
+          max-skill-tokens: '0'
+
+      - name: Reject a plugin directory
+        id: plugin-path
+        continue-on-error: true
+        uses: ./skill-budget
+        with:
+          paths: skill-validate/testdata/plugins/valid-plugin
+
+      - name: Verify rejected inputs
+        env:
+          COMMENT_OUTCOME: ${{ steps.comment.outcome }}
+          OUTCOMES: >-
+            bad-fail=${{ steps.bad-fail.outcome }}
+            bad-key=${{ steps.bad-key.outcome }}
+            bad-author=${{ steps.bad-author.outcome }}
+            bad-limit=${{ steps.bad-limit.outcome }}
+            plugin-path=${{ steps.plugin-path.outcome }}
+        run: |
+          # The comment step also runs where commenting is skipped; skipping
+          # must not fail it.
+          if [ "$COMMENT_OUTCOME" != "success" ]; then
+            echo "Error: the comment step failed (outcome: $COMMENT_OUTCOME)"
+            exit 1
+          fi
+          FAILED=false
+          for ENTRY in $OUTCOMES; do
+            if [ "${ENTRY#*=}" != "failure" ]; then
+              echo "Error: ${ENTRY%%=*} was not rejected (outcome: ${ENTRY#*=})"
+              FAILED=true
+            fi
+          done
+          $FAILED && exit 1
+          echo "All invalid inputs were rejected."
+
   lint-shell:
     name: Lint Shared Shell Scripts
     runs-on: ubuntu-latest
@@ -1576,7 +2164,7 @@ jobs:
             sudo apt-get update -q && sudo apt-get install -y -q shellcheck
           fi
           shellcheck --version
-          shellcheck lib/*.sh skill-validate/*.sh skills-publish/*.sh
+          shellcheck -x lib/*.sh skill-validate/*.sh skills-publish/*.sh skill-budget/*.sh
 
   validate-action-metadata:
     name: Validate Action Metadata
@@ -1641,3 +2229,9 @@ jobs:
           echo "Validating skills-publish/action.yml..."
           yq eval '.' skills-publish/action.yml > /dev/null
           echo "✓ skills-publish/action.yml is valid"
+
+      - name: Validate skill-budget/action.yml
+        run: |
+          echo "Validating skill-budget/action.yml..."
+          yq eval '.' skill-budget/action.yml > /dev/null
+          echo "✓ skill-budget/action.yml is valid"

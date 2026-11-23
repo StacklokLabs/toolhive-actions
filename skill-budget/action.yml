@@ -1,0 +1,117 @@
+name: 'Report Skill Context Budget'
+description: 'Estimate the context cost of skills, compare it with the base commit, and optionally comment on the pull request'
+author: 'Stacklok'
+branding:
+  icon: 'bar-chart-2'
+  color: 'blue'
+
+inputs:
+  paths:
+    description: "Newline-delimited skill directories, or single-level glob patterns such as 'skills/*'. Blank lines are ignored and surrounding whitespace is trimmed."
+    required: true
+  max-skill-tokens:
+    description: 'Estimated token limit for each SKILL.md'
+    required: false
+    default: '5000'
+  max-skill-lines:
+    description: 'Line limit for each SKILL.md'
+    required: false
+    default: '500'
+  base-ref:
+    description: 'Commit to compare against. Defaults to the pull request base commit; empty outside pull requests.'
+    required: false
+    default: ${{ github.event.pull_request.base.sha }}
+  fail:
+    description: "Fail when a skill exceeds a limit. Accepts exactly 'true' or 'false'."
+    required: false
+    default: 'false'
+  comment:
+    description: "Post or update a sticky pull request comment when the budget changes or a limit is exceeded. Accepts exactly 'true' or 'false'."
+    required: false
+    default: 'false'
+  comment-key:
+    description: 'Identifies the sticky comment, so several budget reports can share a pull request'
+    required: false
+    default: 'default'
+  github-token:
+    description: "Token for the pull request comment; needs 'pull-requests: write'"
+    required: false
+    default: ${{ github.token }}
+  comment-author:
+    description: "Login that 'github-token' comments as, for example 'my-app[bot]'. Needed only for a GitHub App token, which cannot look up its own login"
+    required: false
+    default: ''
+
+outputs:
+  report-markdown:
+    description: 'The budget report as Markdown'
+    value: ${{ steps.measure.outputs.report-markdown }}
+  report-file:
+    description: 'Path to the budget report as JSON'
+    value: ${{ steps.measure.outputs.report-file }}
+  over-budget:
+    description: "'true' when a skill exceeds a limit"
+    value: ${{ steps.measure.outputs.over-budget }}
+  comment-id:
+    description: 'ID of the sticky comment that was posted or updated; empty when none was'
+    value: ${{ steps.comment.outputs.comment-id }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check Inputs
+      shell: bash
+      env:
+        INPUT_FAIL: ${{ inputs.fail }}
+        INPUT_COMMENT: ${{ inputs.comment }}
+        INPUT_COMMENT_KEY: ${{ inputs.comment-key }}
+        INPUT_COMMENT_AUTHOR: ${{ inputs.comment-author }}
+      run: |
+        for INPUT in "fail=$INPUT_FAIL" "comment=$INPUT_COMMENT"; do
+          case "${INPUT#*=}" in
+            true|false) ;;
+            *)
+              echo "::error::The '${INPUT%%=*}' input must be exactly 'true' or 'false'."
+              exit 1
+              ;;
+          esac
+        done
+        if ! [[ "$INPUT_COMMENT_KEY" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+          echo "::error::The 'comment-key' input may only contain letters, digits, '.', '_' and '-'."
+          exit 1
+        fi
+        if [ -n "$INPUT_COMMENT_AUTHOR" ] && ! [[ "$INPUT_COMMENT_AUTHOR" =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]]; then
+          echo "::error::The 'comment-author' input must be a GitHub login, for example 'my-app[bot]'."
+          exit 1
+        fi
+
+    - name: Measure Skills
+      id: measure
+      shell: bash
+      env:
+        INPUT_PATHS: ${{ inputs.paths }}
+        INPUT_MAX_SKILL_TOKENS: ${{ inputs.max-skill-tokens }}
+        INPUT_MAX_SKILL_LINES: ${{ inputs.max-skill-lines }}
+        INPUT_BASE_REF: ${{ inputs.base-ref }}
+      run: bash "$GITHUB_ACTION_PATH/budget.sh" measure
+
+    - name: Comment on Pull Request
+      id: comment
+      if: inputs.comment == 'true'
+      shell: bash
+      env:
+        REPORT_FILE: ${{ steps.measure.outputs.report-file }}
+        REPORT_MARKDOWN: ${{ steps.measure.outputs.report-markdown }}
+        INPUT_COMMENT_KEY: ${{ inputs.comment-key }}
+        INPUT_COMMENT_AUTHOR: ${{ inputs.comment-author }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        # Only to tell whether GH_TOKEN is the job's own token.
+        JOB_TOKEN: ${{ github.token }}
+      run: bash "$GITHUB_ACTION_PATH/budget.sh" comment
+
+    - name: Enforce Limits
+      if: inputs.fail == 'true' && steps.measure.outputs.over-budget == 'true'
+      shell: bash
+      run: |
+        echo "::error::At least one skill exceeds the budget; see the report above."
+        exit 1
