@@ -2464,6 +2464,102 @@ jobs:
             exit 1
           fi
 
+      - name: Read wrapped spans, nested includes and workflow paths like Task and the shell
+        run: |
+          fail() { echo "Error: $*"; exit 1; }
+          REPO="$RUNNER_TEMP/refs-edge"
+          mkdir -p "$REPO/skills/edge" "$REPO/docs/sub" "$REPO/docs/flat" "$REPO/web" "$REPO/.github/workflows"
+          cat > "$REPO/Taskfile.yml" <<'EOF'
+          version: '3'
+          includes:
+            docs: ./docs
+          tasks:
+            build: {cmds: [echo build]}
+            test: {cmds: [echo test]}
+            secret:
+              internal: true
+              cmds: [echo secret]
+          EOF
+          cat > "$REPO/docs/Taskfile.yml" <<'EOF'
+          version: '3'
+          includes:
+            sub: ./sub
+            flat:
+              taskfile: ./flat
+              flatten: true
+          tasks:
+            site: {cmds: [echo site]}
+          EOF
+          printf "version: '3'\ntasks:\n  gen: {cmds: [echo gen]}\n" > "$REPO/docs/sub/Taskfile.yml"
+          printf "version: '3'\ntasks:\n  lint: {cmds: [echo lint]}\n" > "$REPO/docs/flat/Taskfile.yml"
+          printf "version: '3'\ntasks:\n  dev: {cmds: [echo dev]}\n" > "$REPO/web/Taskfile.yml"
+          printf 'name: CI\non: push\njobs: {}\n' > "$REPO/.github/workflows/ci.yml"
+          cat > "$REPO/skills/edge/SKILL.md" <<'EOF'
+          ---
+          name: edge
+          description: Edge cases of code references.
+          ---
+          # Edge
+
+          ```console
+          $ task build \
+              --verbose
+          building...
+          $ task test
+          ```
+
+          Run `task
+          build` and then `task nope1` and `docs/nope2.md`.
+
+          | Command | Use |
+          |---------|-----|
+          | `task build \| tee build.log` | Build |
+
+          ```bash
+          curl -O https://raw.githubusercontent.com/org/tmpl/main/.github/workflows/release.yml
+          cat .github/workflows/README.md
+          cat .github/workflows/ci.yml
+          cat .github/workflows/gone.yml
+          ```
+
+          ```
+          uses: org/shared/.github/workflows/reusable.yml@v1
+          ```
+
+          ```bash
+          cd web && task dev
+          ```
+
+          ```bash
+          cd web
+          task dev
+          ```
+
+          - ```bash
+            task nope3
+            ```
+
+          Also `task docs:sub:gen`, `task docs:lint`, `task [target]`, `task TARGET`,
+          `task …`, `task --completion zsh` and `task secret`.
+          EOF
+          # A symlinked Markdown file is skipped with a warning; ToolHive rejects it.
+          ln -s ../../docs/Taskfile.yml "$REPO/skills/edge/linked.md"
+          : > "$RUNNER_TEMP/refs-edge.out"
+          GITHUB_OUTPUT="$RUNNER_TEMP/refs-edge.out" INPUT_PATHS="$REPO/skills/edge" INPUT_REPO_ROOT="$REPO" \
+            bash skill-refs/refs.sh > "$RUNNER_TEMP/refs-edge.log" 2>&1 || { cat "$RUNNER_TEMP/refs-edge.log"; fail "the check failed"; }
+          cat "$RUNNER_TEMP/refs-edge.log"
+          REPORT=$(sed -n 's/^report-file=//p' "$RUNNER_TEMP/refs-edge.out")
+          # Only these: a wrapped span, a table cell, console continuations, cd, nested
+          # and flattened includes, placeholders and other repositories' workflows give none.
+          ACTUAL=$(jq -c '[.findings[] | [.line, .rule, .reference]]' "$REPORT")
+          EXPECTED='[[15,"path-unresolved","docs/nope2.md"],[15,"task-unknown","task nope1"],[25,"workflow-unknown",".github/workflows/gone.yml"],[42,"task-unknown","task nope3"],[46,"task-unknown","task secret"]]'
+          [ "$ACTUAL" = "$EXPECTED" ] || fail "unexpected findings: $ACTUAL"
+          jq -e '.findings[] | select(.reference == "task secret") | .message | test("internal")' "$REPORT" >/dev/null \
+            || fail "the internal task is not reported as internal"
+          grep -Fqx "::warning::Skipping $REPO/skills/edge/linked.md: a symlink, which ToolHive does not allow in a skill directory." \
+            "$RUNNER_TEMP/refs-edge.log" || fail "no warning for the symlinked Markdown file"
+
+
       - name: Copy the repository with an included Taskfile that does not parse
         run: |
           cp -R "$REPO" "$RUNNER_TEMP/refs-broken-include"
