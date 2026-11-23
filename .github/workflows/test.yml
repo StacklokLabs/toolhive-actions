@@ -1456,6 +1456,41 @@ jobs:
         id: daemon
         run: bash ./lib/daemon.sh start
 
+      - name: Stop at the first failed push
+        timeout-minutes: 5
+        env:
+          TOOLHIVE_API_URL: ${{ steps.daemon.outputs.url }}
+        run: |
+          OUT="$RUNNER_TEMP/push-failure"
+          rm -rf "$OUT"; mkdir -p "$OUT"
+          # A trusted event and an OIDC endpoint that cannot issue tokens, pushing to
+          # a closed local port: the first push fails and nothing leaves the runner.
+          export GITHUB_EVENT_NAME=push
+          export ACTIONS_ID_TOKEN_REQUEST_URL=http://127.0.0.1:9/token
+          export ACTIONS_ID_TOKEN_REQUEST_TOKEN=unused
+          export GITHUB_STEP_SUMMARY="$OUT/summary.md"
+          GITHUB_OUTPUT="$OUT/discover" INPUT_ROOT="$FIXTURES/skills" \
+            INPUT_REGISTRY_PREFIX=127.0.0.1:9/ci/skills INPUT_TAGS=$'v1\nv2' \
+            INPUT_PUSH=true INPUT_VALIDATE=false \
+            bash skills-publish/publish.sh discover
+          WORK_DIR=$(sed -n 's/^work-dir=//p' "$OUT/discover")
+          : > "$OUT/publish"
+          if GITHUB_OUTPUT="$OUT/publish" WORK_DIR="$WORK_DIR" INPUT_PUSH=true \
+            bash skills-publish/publish.sh publish > "$OUT/log" 2>&1; then
+            cat "$OUT/log"; echo "Error: publishing succeeded with an unreachable registry"; exit 1
+          fi
+          cat "$OUT/log"; echo "--- outputs"; cat "$OUT/publish"; echo "--- summary"; cat "$OUT/summary.md"
+          PUSHES=$(grep -c '^Pushing ' "$OUT/log" || true)
+          [ "$PUSHES" -eq 1 ] || { echo "Error: expected one push attempt, got $PUSHES"; exit 1; }
+          grep -q '::error::Stopped at the first failed push' "$OUT/log" || { echo "Error: missing the stop error"; exit 1; }
+          grep -qx 'references-json={}' "$OUT/publish" || { echo "Error: references-json lists unpushed references"; exit 1; }
+          REFS=$(awk '/^references<</ { d = substr($0, 13); next } d != "" && $0 == d { d = ""; next } d != "" && NF' "$OUT/publish")
+          [ -z "$REFS" ] || { echo "Error: references lists unpushed references: $REFS"; exit 1; }
+          FAILED_ROWS=$(grep -c '❌ Push failed' "$OUT/summary.md" || true)
+          SKIPPED_ROWS=$(grep -c '⏭️ Not pushed' "$OUT/summary.md" || true)
+          [ "$FAILED_ROWS" -eq 1 ] && [ "$SKIPPED_ROWS" -eq 3 ] || { echo "Error: expected 1 failed and 3 skipped rows, got $FAILED_ROWS and $SKIPPED_ROWS"; exit 1; }
+          echo "Publishing stopped at the first failed push."
+
       - name: Verify builds, and that refused runs built nothing
         env:
           TOOLHIVE_API_URL: ${{ steps.daemon.outputs.url }}
