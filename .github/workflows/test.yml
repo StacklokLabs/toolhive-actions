@@ -1266,9 +1266,11 @@ jobs:
             exit 1
           fi
           if ! printf '%s' "$REFERENCES_JSON" | jq -e --arg skills "$SKILLS_PREFIX" --arg plugins "$PLUGINS_PREFIX" '. == {
-              alpha: ["\($skills)/alpha:v0.0.1-ci", "\($skills)/alpha:latest"],
-              beta: ["\($skills)/beta:v0.0.1-ci", "\($skills)/beta:latest"],
-              gamma: ["\($plugins)/gamma:v0.0.1-ci", "\($plugins)/gamma:latest"]}' >/dev/null; then
+              skills: {
+                alpha: ["\($skills)/alpha:v0.0.1-ci", "\($skills)/alpha:latest"],
+                beta: ["\($skills)/beta:v0.0.1-ci", "\($skills)/beta:latest"]},
+              plugins: {
+                gamma: ["\($plugins)/gamma:v0.0.1-ci", "\($plugins)/gamma:latest"]}}' >/dev/null; then
             echo "Error: references-json output does not match"
             exit 1
           fi
@@ -1302,6 +1304,26 @@ jobs:
             exit 1
           fi
 
+      - name: Build a skill and a plugin with the same name under separate prefixes
+        id: same-name
+        uses: ./skills-publish
+        with:
+          root: ${{ env.FIXTURES }}/skills
+          plugins-root: ${{ env.FIXTURES }}/collision-plugins
+          registry-prefix: ${{ env.SKILLS_PREFIX }}
+          plugins-registry-prefix: ${{ env.PLUGINS_PREFIX }}
+          tags: same-name
+
+      - name: Verify the skill and the plugin stay apart
+        env:
+          REFERENCES_JSON: ${{ steps.same-name.outputs.references-json }}
+        run: |
+          printf '%s\n' "$REFERENCES_JSON" | jq .
+          printf '%s' "$REFERENCES_JSON" | jq -e --arg skills "$SKILLS_PREFIX" --arg plugins "$PLUGINS_PREFIX" '. == {
+              skills: {alpha: ["\($skills)/alpha:same-name"], beta: ["\($skills)/beta:same-name"]},
+              plugins: {alpha: ["\($plugins)/alpha:same-name"]}}' >/dev/null \
+            || { echo "Error: the skill and the plugin named alpha were mixed up"; exit 1; }
+
       - name: Refuse an invalid skill before building
         id: invalid-skill
         continue-on-error: true
@@ -1311,167 +1333,174 @@ jobs:
           registry-prefix: ${{ env.SKILLS_PREFIX }}
           tags: must-not-build
 
-      - name: Refuse a skill and plugin publishing to the same repository
-        id: collision
-        continue-on-error: true
-        uses: ./skills-publish
-        with:
-          root: ${{ env.FIXTURES }}/skills
-          plugins-root: ${{ env.FIXTURES }}/collision-plugins
-          registry-prefix: ${{ env.SKILLS_PREFIX }}
-          tags: must-not-build
-
       - name: Refuse to push without a trusted event and OIDC token
         id: push-refused
         continue-on-error: true
         uses: ./skills-publish
         with:
           root: ${{ env.FIXTURES }}/skills
-          registry-prefix: ${{ env.SKILLS_PREFIX }}
+          # A closed local port, so a later permission change cannot make this push.
+          registry-prefix: 127.0.0.1:9/ci/skills
           tags: must-not-build
           push: 'true'
 
-      - name: Reject uppercase registry prefix
-        id: uppercase-prefix
-        continue-on-error: true
-        uses: ./skills-publish
-        with:
-          root: ${{ env.FIXTURES }}/skills
-          registry-prefix: ghcr.io/StackLok/skills
-          tags: must-not-build
+      - name: Verify refused runs
+        env:
+          INVALID_SKILL_OUTCOME: ${{ steps.invalid-skill.outcome }}
+          PUSH_REFUSED_OUTCOME: ${{ steps.push-refused.outcome }}
+        run: |
+          [ "$INVALID_SKILL_OUTCOME" = "failure" ] || { echo "Error: an invalid skill was not refused"; exit 1; }
+          [ "$PUSH_REFUSED_OUTCOME" = "failure" ] || { echo "Error: pushing was not refused"; exit 1; }
 
-      - name: Reject registry prefix with a tag
-        id: tagged-prefix
-        continue-on-error: true
-        uses: ./skills-publish
-        with:
-          root: ${{ env.FIXTURES }}/skills
-          registry-prefix: ${{ env.SKILLS_PREFIX }}:v1
-          tags: must-not-build
-
-      - name: Reject duplicate tags
-        id: duplicate-tags
-        continue-on-error: true
-        uses: ./skills-publish
-        with:
-          root: ${{ env.FIXTURES }}/skills
-          registry-prefix: ${{ env.SKILLS_PREFIX }}
-          tags: |
-            must-not-build
-            must-not-build
-
-      - name: Reject a full reference as a tag
-        id: reference-tag
-        continue-on-error: true
-        uses: ./skills-publish
-        with:
-          root: ${{ env.FIXTURES }}/skills
-          registry-prefix: ${{ env.SKILLS_PREFIX }}
-          tags: ${{ env.SKILLS_PREFIX }}/alpha:must-not-build
-
-      - name: Reject a root without skills
-        id: empty-root
-        continue-on-error: true
-        uses: ./skills-publish
-        with:
-          root: ${{ env.FIXTURES }}/plugins
-          registry-prefix: ${{ env.SKILLS_PREFIX }}
-          tags: must-not-build
-
-      - name: Reject an empty validate value
-        id: empty-validate
-        continue-on-error: true
-        uses: ./skills-publish
-        with:
-          root: ${{ env.FIXTURES }}/skills
-          registry-prefix: ${{ env.SKILLS_PREFIX }}
-          tags: must-not-build
-          # An unset repository variable expands to an empty string.
-          validate: ${{ vars.TOOLHIVE_ACTIONS_UNSET_VARIABLE }}
-
-      - name: Reject invalid push value
-        id: bad-push
-        continue-on-error: true
-        uses: ./skills-publish
-        with:
-          root: ${{ env.FIXTURES }}/skills
-          registry-prefix: ${{ env.SKILLS_PREFIX }}
-          tags: must-not-build
-          push: 'TRUE'
-
-      - name: Copy a skill to directories with names OCI paths reject
+      - name: Refuse invalid inputs with the expected error
         run: |
           for NAME in MySkill 'my:skill'; do
             mkdir -p "$RUNNER_TEMP/bad-names-$NAME"
             cp -R "$FIXTURES/skills/alpha" "$RUNNER_TEMP/bad-names-$NAME/$NAME"
           done
-
-      - name: Reject a root with a tab or line break
-        run: |
           for ROOT in $'tab\troot' $'line\nroot'; do
             mkdir -p "$RUNNER_TEMP/$ROOT"
             cp -R "$FIXTURES/skills/alpha" "$RUNNER_TEMP/$ROOT/alpha"
-            if GITHUB_OUTPUT=/dev/null INPUT_ROOT="$RUNNER_TEMP/$ROOT" INPUT_REGISTRY_PREFIX="$SKILLS_PREFIX" \
-              INPUT_TAGS=must-not-build INPUT_PUSH=false INPUT_VALIDATE=false \
-              bash skills-publish/publish.sh discover > "$RUNNER_TEMP/odd-root.log" 2>&1; then
-              cat "$RUNNER_TEMP/odd-root.log"
-              echo "Error: a root with a tab or line break was accepted"
-              exit 1
-            fi
-            cat "$RUNNER_TEMP/odd-root.log"
-            grep -Fqx "::error::The 'root' input must not contain a tab or line break." "$RUNNER_TEMP/odd-root.log" \
-              || { echo "Error: the root was not refused for its tab or line break"; exit 1; }
           done
+          # A thv that reports a release from before every push was signed.
+          mkdir -p "$RUNNER_TEMP/old-thv"
+          printf '%s\n' '#!/usr/bin/env bash' "echo '{\"version\": \"v0.47.0\"}'" > "$RUNNER_TEMP/old-thv/thv"
+          chmod +x "$RUNNER_TEMP/old-thv/thv"
 
-      - name: Reject an uppercase directory name
-        id: uppercase-name
-        continue-on-error: true
-        uses: ./skills-publish
-        with:
-          root: ${{ runner.temp }}/bad-names-MySkill
-          registry-prefix: ${{ env.SKILLS_PREFIX }}
-          tags: must-not-build
-          validate: 'false'
-
-      - name: Reject a directory name with a colon
-        id: colon-name
-        continue-on-error: true
-        uses: ./skills-publish
-        with:
-          root: ${{ runner.temp }}/bad-names-my:skill
-          registry-prefix: ${{ env.SKILLS_PREFIX }}
-          tags: must-not-build
-          validate: 'false'
-
-      - name: Verify refused runs
-        env:
-          OUTCOMES: >-
-            invalid-skill=${{ steps.invalid-skill.outcome }}
-            collision=${{ steps.collision.outcome }}
-            push-refused=${{ steps.push-refused.outcome }}
-            uppercase-prefix=${{ steps.uppercase-prefix.outcome }}
-            tagged-prefix=${{ steps.tagged-prefix.outcome }}
-            duplicate-tags=${{ steps.duplicate-tags.outcome }}
-            reference-tag=${{ steps.reference-tag.outcome }}
-            empty-root=${{ steps.empty-root.outcome }}
-            bad-push=${{ steps.bad-push.outcome }}
-            empty-validate=${{ steps.empty-validate.outcome }}
-            uppercase-name=${{ steps.uppercase-name.outcome }}
-            colon-name=${{ steps.colon-name.outcome }}
-        run: |
           FAILED=false
-          for ENTRY in $OUTCOMES; do
-            if [ "${ENTRY#*=}" != "failure" ]; then
-              echo "Error: ${ENTRY%%=*} was not refused (outcome: ${ENTRY#*=})"
+          # Runs discover with valid defaults and the given overrides; it must fail with the exact error.
+          reject() {
+            local name="$1" expected="$2"
+            shift 2
+            if env GITHUB_OUTPUT=/dev/null INPUT_ROOT="$FIXTURES/skills" INPUT_REGISTRY_PREFIX="$SKILLS_PREFIX" \
+              INPUT_TAGS=must-not-build INPUT_PUSH=false INPUT_VALIDATE=false GITHUB_EVENT_NAME=push \
+              ACTIONS_ID_TOKEN_REQUEST_URL=http://127.0.0.1:9/token ACTIONS_ID_TOKEN_REQUEST_TOKEN=unused \
+              "$@" bash skills-publish/publish.sh discover > "$RUNNER_TEMP/reject.log" 2>&1; then
+              cat "$RUNNER_TEMP/reject.log"
+              echo "Error: $name was accepted"
+              FAILED=true
+            elif ! grep -Fqx -- "$expected" "$RUNNER_TEMP/reject.log"; then
+              cat "$RUNNER_TEMP/reject.log"
+              echo "Error: $name failed without the expected error: $expected"
               FAILED=true
             fi
-          done
+          }
+          reject collision "::error::More than one directory would publish to $SKILLS_PREFIX/alpha. Rename one, or set 'plugins-registry-prefix' to separate skills and plugins." \
+            INPUT_PLUGINS_ROOT="$FIXTURES/collision-plugins"
+          reject untrusted-event "::error::Pushing is only allowed on these events: push, release, workflow_dispatch, schedule. This run was triggered by 'pull_request'. Use push: 'false' for a build-only check." \
+            INPUT_PUSH=true GITHUB_EVENT_NAME=pull_request
+          reject no-oidc "::error::Pushing signs artifacts with the job's GitHub OIDC token, but this job cannot request one. Add 'permissions: id-token: write' to the job." \
+            INPUT_PUSH=true ACTIONS_ID_TOKEN_REQUEST_URL=
+          reject old-thv "::error::Pushing needs thv v0.48.0 or later, which signs every push; this thv reports 'v0.47.0'. Install a newer release with the install action." \
+            INPUT_PUSH=true PATH="$RUNNER_TEMP/old-thv:$PATH"
+          reject uppercase-prefix "::error::The 'registry-prefix' input must be lowercase: ghcr.io/StackLok/skills. GitHub owner and repository names can contain capitals, but OCI repository paths cannot." \
+            INPUT_REGISTRY_PREFIX=ghcr.io/StackLok/skills
+          reject tagged-prefix "::error::The 'registry-prefix' input must not include a tag; use the 'tags' input: $SKILLS_PREFIX:v1" \
+            INPUT_REGISTRY_PREFIX="$SKILLS_PREFIX:v1"
+          reject duplicate-tags "::error::The 'tags' input contains the duplicate tag 'must-not-build'." \
+            INPUT_TAGS=$'must-not-build\nmust-not-build'
+          reject reference-tag "::error::Invalid tag '$SKILLS_PREFIX/alpha:must-not-build'. Use a plain OCI tag such as v1.2.0 or latest, not a full reference." \
+            INPUT_TAGS="$SKILLS_PREFIX/alpha:must-not-build"
+          reject empty-root "::error::No skill directories with SKILL.md found under $FIXTURES/plugins." \
+            INPUT_ROOT="$FIXTURES/plugins"
+          reject bad-push "::error::The 'push' input must be exactly 'true' or 'false'." \
+            INPUT_PUSH=TRUE
+          # An unset repository variable expands to an empty string.
+          reject empty-validate "::error::The 'validate' input must be exactly 'true' or 'false'." \
+            INPUT_VALIDATE=
+          reject uppercase-name "::error::$RUNNER_TEMP/bad-names-MySkill/MySkill cannot be published: the directory name becomes part of the OCI repository path, so it must be lowercase letters and digits separated by '.', '_', '__' or '-'." \
+            INPUT_ROOT="$RUNNER_TEMP/bad-names-MySkill"
+          reject colon-name "::error::$RUNNER_TEMP/bad-names-my:skill/my:skill cannot be published: the directory name becomes part of the OCI repository path, so it must be lowercase letters and digits separated by '.', '_', '__' or '-'." \
+            INPUT_ROOT="$RUNNER_TEMP/bad-names-my:skill"
+          reject tab-root "::error::The 'root' input must not contain a tab or line break." \
+            INPUT_ROOT="$RUNNER_TEMP/"$'tab\troot'
+          reject line-break-root "::error::The 'root' input must not contain a tab or line break." \
+            INPUT_ROOT="$RUNNER_TEMP/"$'line\nroot'
           $FAILED && exit 1
-          echo "All invalid runs were refused."
+          echo "All invalid inputs were refused with their own errors."
+
+      - name: Warn about hidden directories and encode untrusted names
+        run: |
+          fail() { echo "Error: $*"; exit 1; }
+          ROOT="$RUNNER_TEMP/odd-names"
+          mkdir -p "$ROOT/.draft" "$ROOT/.git" "$ROOT/x"$'\n'"::add-mask::ghcr.io"
+          cp -R "$FIXTURES/skills/alpha" "$ROOT/alpha"
+          cp -R "$FIXTURES/skills/alpha/." "$ROOT/.draft/"
+          GITHUB_OUTPUT=/dev/null INPUT_ROOT="$ROOT" INPUT_REGISTRY_PREFIX="$SKILLS_PREFIX" INPUT_TAGS=must-not-build \
+            INPUT_PUSH=false INPUT_VALIDATE=false bash skills-publish/publish.sh discover > "$RUNNER_TEMP/odd-names.log" 2>&1
+          cat "$RUNNER_TEMP/odd-names.log"
+          # Lines the runner would read as a workflow command: it trims leading spaces first.
+          COMMANDS=$(sed 's/^[[:space:]]*//' "$RUNNER_TEMP/odd-names.log" | grep '^::' || true)
+          grep -Fqx "::warning::Skipping $ROOT/.draft: hidden directories are not published." <<< "$COMMANDS" \
+            || fail "no warning for the hidden skill directory"
+          if grep -Fq "$ROOT/.git" <<< "$COMMANDS"; then fail "a hidden directory without SKILL.md was reported"; fi
+          if grep -q '^::add-mask::' <<< "$COMMANDS"; then fail "a directory name became a workflow command"; fi
+          grep -Fqx "::warning::Skipping $ROOT/x%0A::add-mask::ghcr.io: no SKILL.md." <<< "$COMMANDS" \
+            || fail "the name with a line break was not encoded"
+
+      - name: Push one tag at a time and list only what was pushed
+        run: |
+          fail() { echo "Error: $*"; exit 1; }
+          OUT="$RUNNER_TEMP/partial-push"
+          mkdir -p "$OUT/bin"
+          # A thv that builds and pushes nothing, logs each push and fails one.
+          printf '%s\n' '#!/usr/bin/env bash' \
+            'case "$1 $2" in' \
+            '  "version --format") echo "{\"version\": \"v0.67.0\"}" ;;' \
+            '  "skill build"|"ai-plugin build") printf "%s\n" "$5" ;;' \
+            '  "skill push"|"ai-plugin push") echo "$3" >> "$PUSH_LOG"; [ "$3" != "$FAIL_PUSH" ] ;;' \
+            '  *) echo "unexpected: $*" >&2; exit 2 ;;' \
+            'esac' > "$OUT/bin/thv"
+          chmod +x "$OUT/bin/thv"
+          export PATH="$OUT/bin:$PATH" PUSH_LOG="$OUT/pushes" FAIL_PUSH=127.0.0.1:9/ci/skills/beta:latest
+          export GITHUB_EVENT_NAME=push ACTIONS_ID_TOKEN_REQUEST_URL=http://127.0.0.1:9/token ACTIONS_ID_TOKEN_REQUEST_TOKEN=unused
+          export GITHUB_STEP_SUMMARY="$OUT/summary.md"
+          : > "$PUSH_LOG"
+          GITHUB_OUTPUT="$OUT/discover" INPUT_ROOT="$FIXTURES/skills" INPUT_PLUGINS_ROOT="$FIXTURES/plugins" \
+            INPUT_REGISTRY_PREFIX=127.0.0.1:9/ci/skills INPUT_PLUGINS_REGISTRY_PREFIX=127.0.0.1:9/ci/plugins \
+            INPUT_TAGS=$'v1\nlatest' INPUT_PUSH=true INPUT_VALIDATE=false bash skills-publish/publish.sh discover
+          WORK_DIR=$(sed -n 's/^work-dir=//p' "$OUT/discover")
+          : > "$OUT/publish"
+          if GITHUB_OUTPUT="$OUT/publish" WORK_DIR="$WORK_DIR" INPUT_PUSH=true \
+            bash skills-publish/publish.sh publish > "$OUT/log" 2>&1; then
+            cat "$OUT/log"; fail "publishing succeeded although a push failed"
+          fi
+          cat "$OUT/log"; echo "--- outputs"; cat "$OUT/publish"; echo "--- summary"; cat "$OUT/summary.md"
+          P=127.0.0.1:9/ci
+          [ "$(cat "$PUSH_LOG")" = "$P/skills/alpha:v1"$'\n'"$P/skills/beta:v1"$'\n'"$P/plugins/gamma:v1"$'\n'"$P/skills/alpha:latest"$'\n'"$P/skills/beta:latest" ] \
+            || fail "pushes were not one tag at a time, or did not stop at the failure"
+          JSON=$(sed -n 's/^references-json=//p' "$OUT/publish")
+          jq -e --arg p "$P" '. == {
+              skills: {alpha: ["\($p)/skills/alpha:v1", "\($p)/skills/alpha:latest"], beta: ["\($p)/skills/beta:v1"]},
+              plugins: {gamma: ["\($p)/plugins/gamma:v1"]}}' <<< "$JSON" >/dev/null \
+            || fail "references-json does not list exactly the pushed references"
+          REFS=$(awk '/^references<</ { d = substr($0, 13); next } d != "" && $0 == d { d = ""; next } d != "" && NF' "$OUT/publish")
+          [ "$REFS" = "$P/skills/alpha:v1"$'\n'"$P/skills/beta:v1"$'\n'"$P/plugins/gamma:v1"$'\n'"$P/skills/alpha:latest" ] \
+            || fail "references does not list exactly the pushed references: $REFS"
+          grep -Fqx "| beta | skill | \`$P/skills/beta:latest\` | ❌ Push failed; the tag may be in the registry unsigned |" "$OUT/summary.md" \
+            || fail "the failed push is not marked"
+          grep -Fqx "| gamma | plugin | \`$P/plugins/gamma:latest\` | ⏭️ Not pushed |" "$OUT/summary.md" \
+            || fail "the push after the failure is not marked as not pushed"
 
       - name: Start ToolHive Daemon for Build Listing Checks
         id: daemon
         run: bash ./lib/daemon.sh start
+
+      - name: Start a daemon of its own when pushing
+        env:
+          EXISTING_URL: ${{ steps.daemon.outputs.url }}
+        run: |
+          fail() { echo "Error: $*"; exit 1; }
+          OUT="$RUNNER_TEMP/owned"
+          mkdir -p "$OUT"
+          GITHUB_OUTPUT="$OUT/reused" TOOLHIVE_API_URL="$EXISTING_URL" bash ./lib/daemon.sh start
+          grep -qx 'started=false' "$OUT/reused" || fail "a running daemon was not reused without --owned"
+          GITHUB_OUTPUT="$OUT/owned" TOOLHIVE_API_URL="$EXISTING_URL" bash ./lib/daemon.sh start --owned
+          cat "$OUT/owned"
+          DAEMON_PID=$(sed -n 's/^pid=//p' "$OUT/owned") DAEMON_STARTED=true bash ./lib/daemon.sh stop
+          grep -qx 'started=true' "$OUT/owned" || fail "--owned reused the running daemon"
+          grep -qx "url=$EXISTING_URL" "$OUT/owned" && fail "--owned returned the running daemon's URL"
+          echo "--owned started a daemon of its own."
 
       - name: Stop at the first failed push
         timeout-minutes: 5
@@ -1500,7 +1529,7 @@ jobs:
           PUSHES=$(grep -c '^Pushing ' "$OUT/log" || true)
           [ "$PUSHES" -eq 1 ] || { echo "Error: expected one push attempt, got $PUSHES"; exit 1; }
           grep -q '::error::Stopped at the first failed push' "$OUT/log" || { echo "Error: missing the stop error"; exit 1; }
-          grep -qx 'references-json={}' "$OUT/publish" || { echo "Error: references-json lists unpushed references"; exit 1; }
+          grep -qx 'references-json={"skills":{},"plugins":{}}' "$OUT/publish" || { echo "Error: references-json lists unpushed references"; exit 1; }
           REFS=$(awk '/^references<</ { d = substr($0, 13); next } d != "" && $0 == d { d = ""; next } d != "" && NF' "$OUT/publish")
           [ -z "$REFS" ] || { echo "Error: references lists unpushed references: $REFS"; exit 1; }
           FAILED_ROWS=$(grep -c '❌ Push failed' "$OUT/summary.md" || true)
