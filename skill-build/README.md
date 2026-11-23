@@ -159,7 +159,7 @@ See the [Agent Skills Specification](https://agentskills.io/specification) for t
 
 - The action validates the skill directory structure before building
 - No registry credentials are handled by this action — use a dedicated login action (e.g., `docker/login-action`) to configure credentials before pushing
-- The ToolHive daemon is started on a random available port and stopped after the action completes
+- The action reuses a ToolHive daemon reachable at `TOOLHIVE_API_URL` (default `http://127.0.0.1:8080`) whose health check answers 204 or 503; otherwise it starts one on a random loopback port and stops only that action-owned process
 
 ## Troubleshooting
 

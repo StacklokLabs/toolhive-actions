@@ -3,8 +3,8 @@ name: Test Actions
 on:
   push:
     branches: [ main ]
+  # All base branches, so stacked pull requests also run the tests.
   pull_request:
-    branches: [ main ]
   workflow_dispatch:
   # Run daily so breakage from upstream ToolHive "latest" releases (e.g. renamed
   # CLI flags or moved API routes) is caught proactively rather than at next push.
@@ -338,30 +338,12 @@ jobs:
 
       - name: Start ToolHive Daemon for Build Listing Checks
         id: skill-daemon
-        run: |
-          PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
-          DAEMON_URL="http://127.0.0.1:${PORT}"
-          thv serve --host 127.0.0.1 --port "$PORT" &
-          DAEMON_PID=$!
-          echo "pid=$DAEMON_PID" >> "$GITHUB_OUTPUT"
-          echo "TOOLHIVE_API_URL=$DAEMON_URL" >> "$GITHUB_ENV"
+        run: bash ./lib/daemon.sh start
 
-          for _ in $(seq 1 30); do
-            if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
-              echo "Error: ToolHive daemon exited unexpectedly"
-              wait "$DAEMON_PID" 2>/dev/null
-              exit 1
-            fi
-            HTTP_CODE=$(curl --silent --show-error --connect-timeout 1 --max-time 2 \
-              -o /dev/null -w '%{http_code}' "${DAEMON_URL}/health" 2>/dev/null || true)
-            if [ "$HTTP_CODE" = "204" ]; then
-              exit 0
-            fi
-            sleep 1
-          done
-
-          echo "Error: ToolHive daemon failed to become healthy"
-          exit 1
+      - name: Export Daemon URL for Later Steps
+        env:
+          DAEMON_URL: ${{ steps.skill-daemon.outputs.url }}
+        run: echo "TOOLHIVE_API_URL=$DAEMON_URL" >> "$GITHUB_ENV"
 
       - name: Verify Multiple Builds Are Listed Locally
         env:
@@ -386,11 +368,8 @@ jobs:
         if: always()
         env:
           DAEMON_PID: ${{ steps.skill-daemon.outputs.pid }}
-        run: |
-          if [ -n "$DAEMON_PID" ]; then
-            kill "$DAEMON_PID" 2>/dev/null || true
-            wait "$DAEMON_PID" 2>/dev/null || true
-          fi
+          DAEMON_STARTED: ${{ steps.skill-daemon.outputs.started }}
+        run: bash ./lib/daemon.sh stop
 
       - name: Reject tag and tags together
         id: conflicting-tags
@@ -511,30 +490,12 @@ jobs:
 
       - name: Start ToolHive Daemon for Build Listing Checks
         id: plugin-daemon
-        run: |
-          PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
-          DAEMON_URL="http://127.0.0.1:${PORT}"
-          thv serve --host 127.0.0.1 --port "$PORT" &
-          DAEMON_PID=$!
-          echo "pid=$DAEMON_PID" >> "$GITHUB_OUTPUT"
-          echo "TOOLHIVE_API_URL=$DAEMON_URL" >> "$GITHUB_ENV"
+        run: bash ./lib/daemon.sh start
 
-          for _ in $(seq 1 30); do
-            if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
-              echo "Error: ToolHive daemon exited unexpectedly"
-              wait "$DAEMON_PID" 2>/dev/null
-              exit 1
-            fi
-            HTTP_CODE=$(curl --silent --show-error --connect-timeout 1 --max-time 2 \
-              -o /dev/null -w '%{http_code}' "${DAEMON_URL}/health" 2>/dev/null || true)
-            if [ "$HTTP_CODE" = "204" ]; then
-              exit 0
-            fi
-            sleep 1
-          done
-
-          echo "Error: ToolHive daemon failed to become healthy"
-          exit 1
+      - name: Export Daemon URL for Later Steps
+        env:
+          DAEMON_URL: ${{ steps.plugin-daemon.outputs.url }}
+        run: echo "TOOLHIVE_API_URL=$DAEMON_URL" >> "$GITHUB_ENV"
 
       - name: Verify Default Build Is Listed by Controlled Daemon
         env:
@@ -628,11 +589,8 @@ jobs:
         if: always()
         env:
           DAEMON_PID: ${{ steps.plugin-daemon.outputs.pid }}
-        run: |
-          if [ -n "$DAEMON_PID" ]; then
-            kill "$DAEMON_PID" 2>/dev/null || true
-            wait "$DAEMON_PID" 2>/dev/null || true
-          fi
+          DAEMON_STARTED: ${{ steps.plugin-daemon.outputs.started }}
+        run: bash ./lib/daemon.sh stop
 
   test-lockfile-actions:
     name: Test Lock File Actions
@@ -780,6 +738,240 @@ jobs:
         env:
           OUTCOME: ${{ steps.verify-drift.outcome }}
         run: test "$OUTCOME" = "failure"
+
+  test-daemon-lib-ps:
+    name: Test Daemon Lifecycle Without /proc
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Stop a zombie and a live process with ps
+        run: |
+          [ ! -d /proc ] || { echo "Error: expected no /proc on this runner"; exit 1; }
+          # A zombie: the subshell execs a sleep that never reaps its exited child.
+          ( sleep 0 & exec sleep 30 ) &
+          PARENT=$!
+          ZOMBIE=""
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            ZOMBIE=$(ps -ax -o pid=,ppid= | awk -v parent="$PARENT" '$2 == parent { print $1; exit }')
+            [ -n "$ZOMBIE" ] && [[ "$(ps -o stat= -p "$ZOMBIE")" == Z* ]] && break
+            sleep 0.5
+          done
+          [ -n "$ZOMBIE" ] && [[ "$(ps -o stat= -p "$ZOMBIE")" == Z* ]] || { echo "Error: no zombie to test with"; exit 1; }
+          START=$SECONDS
+          OUT=$(DAEMON_PID="$ZOMBIE" DAEMON_STARTED=true bash ./lib/daemon.sh stop 2>&1)
+          echo "$OUT"
+          [ $((SECONDS - START)) -lt 5 ] || { echo "Error: stop waited on a zombie"; exit 1; }
+          if grep -q 'SIGKILL' <<< "$OUT"; then echo "Error: stop sent SIGKILL to a zombie"; exit 1; fi
+          kill "$PARENT" 2>/dev/null || true
+
+          # A live process is stopped.
+          sleep 30 &
+          LIVE=$!
+          DAEMON_PID="$LIVE" DAEMON_STARTED=true bash ./lib/daemon.sh stop
+          if kill -0 "$LIVE" 2>/dev/null && [[ "$(ps -o stat= -p "$LIVE")" != Z* ]]; then
+            echo "Error: stop left a live process running"; exit 1
+          fi
+
+      - name: Report a server that exits at once
+        run: |
+          STUB=$(mktemp -d)
+          printf '#!/bin/sh\nexit 1\n' > "$STUB/thv"
+          chmod +x "$STUB/thv"
+          START=$SECONDS
+          if OUT=$(PATH="$STUB:$PATH" GITHUB_OUTPUT=/dev/null TOOLHIVE_API_URL=http://127.0.0.1:9 bash ./lib/daemon.sh start 2>&1); then
+            echo "$OUT"; echo "Error: start succeeded with a thv that exits at once"; exit 1
+          fi
+          echo "$OUT"
+          grep -q 'exited unexpectedly' <<< "$OUT" || { echo "Error: expected the early exit to be reported"; exit 1; }
+          [ $((SECONDS - START)) -lt 10 ] || { echo "Error: start waited for a server that had exited"; exit 1; }
+
+  test-daemon-lib:
+    name: Test Shared Daemon Lifecycle
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install ToolHive
+        uses: ./install
+
+      - name: Verify no ToolHive daemon is prestarted
+        run: |
+          HTTP_CODE=$(curl --silent --connect-timeout 1 --max-time 2 \
+            -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health 2>/dev/null || true)
+          if [ "$HTTP_CODE" != "000" ] || pgrep -f '[t]hv serve' >/dev/null; then
+            echo "Error: A ToolHive daemon was running before the lifecycle test"
+            exit 1
+          fi
+
+      - name: Start an owned daemon
+        id: owned
+        run: bash ./lib/daemon.sh start
+
+      - name: Verify the owned daemon is ready
+        env:
+          URL: ${{ steps.owned.outputs.url }}
+          PID: ${{ steps.owned.outputs.pid }}
+          STARTED: ${{ steps.owned.outputs.started }}
+        run: |
+          [ "$STARTED" = "true" ] || { echo "Error: expected started=true, got '$STARTED'"; exit 1; }
+          if ! [[ "$URL" =~ ^http://127\.0\.0\.1:[0-9]+$ ]]; then
+            echo "Error: unexpected daemon URL '$URL'"
+            exit 1
+          fi
+          kill -0 "$PID" || { echo "Error: daemon process $PID is not running"; exit 1; }
+          HTTP_CODE=$(curl --silent --max-time 2 -o /dev/null -w '%{http_code}' "$URL/health" || true)
+          case "$HTTP_CODE" in
+            204|503) ;;
+            *) echo "Error: daemon health returned '$HTTP_CODE'"; exit 1 ;;
+          esac
+
+      - name: Reuse the running daemon
+        id: reused
+        env:
+          TOOLHIVE_API_URL: ${{ steps.owned.outputs.url }}
+        run: bash ./lib/daemon.sh start
+
+      - name: Verify the daemon was reused, not restarted
+        env:
+          OWNED_URL: ${{ steps.owned.outputs.url }}
+          URL: ${{ steps.reused.outputs.url }}
+          PID: ${{ steps.reused.outputs.pid }}
+          STARTED: ${{ steps.reused.outputs.started }}
+        run: |
+          [ "$STARTED" = "false" ] || { echo "Error: expected started=false, got '$STARTED'"; exit 1; }
+          [ "$URL" = "$OWNED_URL" ] || { echo "Error: reused URL '$URL' differs from '$OWNED_URL'"; exit 1; }
+          [ -z "$PID" ] || { echo "Error: reused daemon reported pid '$PID'"; exit 1; }
+          COUNT=$(pgrep -f '[t]hv serve' | wc -l)
+          [ "$COUNT" -eq 1 ] || { echo "Error: expected one thv serve process, found $COUNT"; exit 1; }
+
+      - name: Stop a daemon this step did not start
+        env:
+          # A real PID with started=false must never be stopped.
+          DAEMON_PID: ${{ steps.owned.outputs.pid }}
+          DAEMON_STARTED: ${{ steps.reused.outputs.started }}
+        run: bash ./lib/daemon.sh stop
+
+      - name: Verify the daemon is still running
+        env:
+          URL: ${{ steps.owned.outputs.url }}
+          PID: ${{ steps.owned.outputs.pid }}
+        run: |
+          kill -0 "$PID" || { echo "Error: daemon was stopped although started=false"; exit 1; }
+          HTTP_CODE=$(curl --silent --max-time 2 -o /dev/null -w '%{http_code}' "$URL/health" || true)
+          case "$HTTP_CODE" in
+            204|503) ;;
+            *) echo "Error: daemon health returned '$HTTP_CODE'"; exit 1 ;;
+          esac
+
+      - name: Stop the owned daemon
+        env:
+          DAEMON_PID: ${{ steps.owned.outputs.pid }}
+          DAEMON_STARTED: ${{ steps.owned.outputs.started }}
+        run: bash ./lib/daemon.sh stop
+
+      - name: Verify the owned daemon stopped
+        env:
+          URL: ${{ steps.owned.outputs.url }}
+          PID: ${{ steps.owned.outputs.pid }}
+        run: |
+          # A reaped process has no state; an unreaped one shows Z (zombie).
+          STATE=$(ps -o stat= -p "$PID" 2>/dev/null || true)
+          case "$STATE" in
+            ""|Z*) ;;
+            *) echo "Error: daemon process $PID is still running (state '$STATE')"; exit 1 ;;
+          esac
+          HTTP_CODE=$(curl --silent --max-time 2 -o /dev/null -w '%{http_code}' "$URL/health" || true)
+          [ "$HTTP_CODE" = "000" ] || { echo "Error: daemon still answers with '$HTTP_CODE'"; exit 1; }
+
+      - name: Start when TOOLHIVE_API_URL is unreachable
+        id: fallback
+        env:
+          TOOLHIVE_API_URL: http://127.0.0.1:9
+        run: bash ./lib/daemon.sh start
+
+      - name: Verify a new daemon was started
+        env:
+          URL: ${{ steps.fallback.outputs.url }}
+          STARTED: ${{ steps.fallback.outputs.started }}
+        run: |
+          [ "$STARTED" = "true" ] || { echo "Error: expected started=true, got '$STARTED'"; exit 1; }
+          [ "$URL" != "http://127.0.0.1:9" ] || { echo "Error: unreachable URL was reused"; exit 1; }
+
+      - name: Stop the fallback daemon
+        if: always()
+        env:
+          DAEMON_PID: ${{ steps.fallback.outputs.pid }}
+          DAEMON_STARTED: ${{ steps.fallback.outputs.started }}
+        run: bash ./lib/daemon.sh stop
+
+      - name: Start and stop without a working ps
+        run: |
+          # Minimal job containers may lack ps. Liveness must then fall back
+          # to /proc or kill -0 instead of treating the daemon as dead.
+          SHIM=$(mktemp -d)
+          printf '#!/bin/sh\nexit 127\n' > "$SHIM/ps"
+          chmod +x "$SHIM/ps"
+          OUT=$(mktemp)
+          PATH="$SHIM:$PATH" GITHUB_OUTPUT="$OUT" TOOLHIVE_API_URL=http://127.0.0.1:9 \
+            timeout 60 bash ./lib/daemon.sh start
+          PID=$(sed -n 's/^pid=//p' "$OUT")
+          URL=$(sed -n 's/^url=//p' "$OUT")
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' "$URL/health" || true)
+          case "$CODE" in
+            204|503) ;;
+            *) echo "Error: daemon not ready without ps (health $CODE)"; exit 1 ;;
+          esac
+          PATH="$SHIM:$PATH" DAEMON_PID="$PID" DAEMON_STARTED=true timeout 30 bash ./lib/daemon.sh stop
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' "$URL/health" || true)
+          if [ "$CODE" != "000" ]; then
+            echo "Error: daemon still answers after stop without ps (health $CODE)"
+            exit 1
+          fi
+
+      - name: Reject TOOLHIVE_API_URL with a line break
+        id: newline-url
+        continue-on-error: true
+        env:
+          TOOLHIVE_API_URL: "http://127.0.0.1:8080\nstarted=false"
+        run: bash ./lib/daemon.sh start
+
+      - name: Verify the line break is rejected
+        env:
+          OUTCOME: ${{ steps.newline-url.outcome }}
+        run: test "$OUTCOME" = "failure"
+
+      - name: Reject an unknown command
+        id: unknown-command
+        continue-on-error: true
+        run: bash ./lib/daemon.sh restart
+
+      - name: Verify the unknown command is rejected
+        env:
+          OUTCOME: ${{ steps.unknown-command.outcome }}
+        run: test "$OUTCOME" = "failure"
+
+      - name: Clean Up
+        if: always()
+        run: pkill -f '[t]hv serve' || true
+
+  lint-shell:
+    name: Lint Shared Shell Scripts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Run shellcheck
+        run: |
+          # Preinstalled on GitHub-hosted Ubuntu; install it on other images.
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update -q && sudo apt-get install -y -q shellcheck
+          fi
+          shellcheck --version
+          shellcheck lib/*.sh
 
   validate-action-metadata:
     name: Validate Action Metadata
