@@ -1805,6 +1805,146 @@ jobs:
               || { echo "Error: no error names the symlinked SKILL.md (base '$base_ref')"; exit 1; }
           done
 
+      - name: Count tracked files through checkout filters
+        run: |
+          fail() { echo "Error: $*"; exit 1; }
+          commit() {
+            git -C "$1" add -A
+            git -C "$1" -c user.name=ci -c user.email=ci@example.com commit -q -m "$2"
+          }
+          # Runs a measurement from a repository against its HEAD; prints the report path.
+          measure_head() {
+            local repo="$1" out="$RUNNER_TEMP/$2.out"
+            : > "$out"
+            (cd "$repo" && GITHUB_OUTPUT="$out" INPUT_PATHS='skills/*' INPUT_BASE_REF="$(git rev-parse HEAD)" \
+              bash "$GITHUB_WORKSPACE/skill-budget/budget.sh" measure) > "$RUNNER_TEMP/$2.log" 2>&1 \
+              || { cat "$RUNNER_TEMP/$2.log"; fail "$2: the measurement failed"; }
+            sed -n 's/^report-file=//p' "$out"
+          }
+          unchanged() { jq -e '(.changed | not) and all(.skills[]; .delta | to_entries | all(.value == 0))' "$1" >/dev/null; }
+
+          # Ignored files, such as dependencies an earlier step installed, are not part of the skill.
+          REPO="$RUNNER_TEMP/budget-untracked"
+          mkdir -p "$REPO/skills"
+          cp -R "$FIXTURES/small-skill" "$REPO/skills/"
+          echo 'node_modules/' > "$REPO/.gitignore"
+          git -C "$REPO" init -q
+          commit "$REPO" base
+          mkdir -p "$REPO/skills/small-skill/node_modules/dep"
+          head -c 20000 /dev/zero | tr '\0' 'x' > "$REPO/skills/small-skill/node_modules/dep/index.js"
+          REPORT=$(measure_head "$REPO" untracked)
+          unchanged "$REPORT" || { jq . "$REPORT"; fail "ignored files were counted"; }
+          # An untracked file that is not ignored is new content, as git status shows it.
+          echo "Notes that are not committed yet." > "$REPO/skills/small-skill/notes-draft.md"
+          REPORT=$(measure_head "$REPO" untracked-new)
+          jq -e '.skills[0].delta.directory_tokens > 0 and .changed' "$REPORT" >/dev/null \
+            || { jq . "$REPORT"; fail "an untracked file that is not ignored was not counted"; }
+
+          # A fresh clone with eol=crlf has CRLF files; the base blobs must be compared the same way.
+          REPO="$RUNNER_TEMP/budget-crlf"
+          mkdir -p "$REPO/skills"
+          cp -R "$FIXTURES/small-skill" "$REPO/skills/"
+          printf '*.md text eol=crlf\n' > "$REPO/.gitattributes"
+          git -C "$REPO" init -q
+          commit "$REPO" base
+          git clone -q "$REPO" "$REPO-clone"
+          grep -q $'\r$' "$REPO-clone/skills/small-skill/SKILL.md" || fail "the clone has no CRLF line endings"
+          REPORT=$(measure_head "$REPO-clone" crlf)
+          unchanged "$REPORT" || { jq . "$REPORT"; fail "checkout filters gave a delta on an unchanged skill"; }
+
+          # Deleting the last skill also removes skills/, which Git does not keep empty.
+          REPO="$RUNNER_TEMP/budget-last"
+          mkdir -p "$REPO/skills"
+          cp -R "$FIXTURES/small-skill" "$REPO/skills/only"
+          touch "$REPO/README.md"
+          git -C "$REPO" init -q
+          commit "$REPO" base
+          rm -rf "$REPO/skills"
+          REPORT=$(measure_head "$REPO" last)
+          jq -e '[.skills[] | {name, base_status}] == [{name: "only", base_status: "deleted"}]' "$REPORT" >/dev/null \
+            || { jq . "$REPORT"; fail "deleting the last skill was not reported as a deletion"; }
+
+          # '*' does not match a hidden directory on disk, so a deleted one is not listed either.
+          REPO="$RUNNER_TEMP/budget-hidden"
+          mkdir -p "$REPO/skills"
+          cp -R "$FIXTURES/small-skill" "$REPO/skills/"
+          cp -R "$FIXTURES/small-skill" "$REPO/skills/.draft"
+          git -C "$REPO" init -q
+          commit "$REPO" base
+          rm -rf "$REPO/skills/.draft"
+          REPORT=$(measure_head "$REPO" hidden)
+          jq -e '[.skills[].name] == ["small-skill"]' "$REPORT" >/dev/null \
+            || { jq . "$REPORT"; fail "a deleted hidden directory was listed"; }
+
+          # A frontmatter that does not parse fails the measurement, but only warns at the base.
+          REPO="$RUNNER_TEMP/budget-frontmatter"
+          mkdir -p "$REPO/skills"
+          cp -R "$FIXTURES/small-skill" "$REPO/skills/"
+          git -C "$REPO" init -q
+          commit "$REPO" base
+          printf -- '---\nname: small-skill\ndescription: [unclosed\n---\n# Small\n' > "$REPO/skills/small-skill/SKILL.md"
+          if (cd "$REPO" && GITHUB_OUTPUT=/dev/null INPUT_PATHS='skills/*' bash "$GITHUB_WORKSPACE/skill-budget/budget.sh" measure) \
+            > "$RUNNER_TEMP/frontmatter.log" 2>&1; then
+            cat "$RUNNER_TEMP/frontmatter.log"
+            fail "a frontmatter that does not parse was measured"
+          fi
+          cat "$RUNNER_TEMP/frontmatter.log"
+          grep -Fq '::The frontmatter of skills/small-skill/SKILL.md does not parse, so its description cannot be measured.' \
+            "$RUNNER_TEMP/frontmatter.log" || fail "no error for the frontmatter that does not parse"
+          commit "$REPO" broken
+          cp "$FIXTURES/small-skill/SKILL.md" "$REPO/skills/small-skill/SKILL.md"
+          measure_head "$REPO" fixed-frontmatter > /dev/null
+          grep -Fqx '::warning::The frontmatter of skills/small-skill/SKILL.md does not parse at the base commit, so its description counts as 0 tokens there.' \
+            "$RUNNER_TEMP/fixed-frontmatter.log" || fail "no warning for the frontmatter at the base"
+
+      - name: Find the comment of a GitHub App token
+        run: |
+          fail() { echo "Error: $*"; exit 1; }
+          OUT="$RUNNER_TEMP/comment-author"
+          mkdir -p "$OUT/bin"
+          # A gh whose token cannot look itself up, like an installation token. The
+          # pull request has one budget comment, written by my-app[bot].
+          cat > "$OUT/bin/gh" <<'EOF'
+          #!/usr/bin/env bash
+          echo "$*" >> "$GH_LOG"
+          case "$*" in
+            "api graphql"* | "api user"*) exit 1 ;;
+            "api --paginate "*) echo '[{"id": 42, "user": {"login": "my-app[bot]"}, "body": "<!-- toolhive-skill-budget:stub -->\nOld report"}]' ;;
+            "api -X PATCH "*) ;;
+            "api -X POST "*) echo 43 ;;
+            *) exit 2 ;;
+          esac
+          EOF
+          chmod +x "$OUT/bin/gh"
+          echo '{"pull_request": {"number": 7, "head": {"repo": {"full_name": "org/repo"}}}}' > "$OUT/event.json"
+          GITHUB_OUTPUT="$OUT/measure" INPUT_PATHS="$FIXTURES/over-budget" bash skill-budget/budget.sh measure > /dev/null
+          export PATH="$OUT/bin:$PATH" GH_LOG="$OUT/gh.log" GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$OUT/event.json"
+          export GITHUB_REPOSITORY=org/repo INPUT_COMMENT_KEY=stub GH_TOKEN=app-token
+          export REPORT_FILE="$(sed -n 's/^report-file=//p' "$OUT/measure")" REPORT_MARKDOWN="### Skill budget"
+          # Runs the comment phase with the given overrides; the log is <name>.log.
+          run_comment() {
+            local name="$1"
+            shift
+            : > "$GH_LOG"
+            env GITHUB_OUTPUT="$OUT/$name.out" "$@" bash skill-budget/budget.sh comment > "$OUT/$name.log" 2>&1 \
+              || { cat "$OUT/$name.log"; fail "$name: the comment phase failed"; }
+            cat "$OUT/$name.log"
+          }
+
+          run_comment unknown JOB_TOKEN=job-token
+          grep -Fq "::warning::Skipping the budget comment: cannot tell which account 'github-token' comments as" "$OUT/unknown.log" \
+            || fail "an unknown author did not skip the comment with a warning"
+          if grep -q -- '-X ' "$GH_LOG"; then fail "a comment was written for an unknown author"; fi
+
+          run_comment author JOB_TOKEN=job-token INPUT_COMMENT_AUTHOR='my-app[bot]'
+          grep -q '^api -X PATCH repos/org/repo/issues/comments/42 ' "$GH_LOG" || fail "comment-author did not update the app's comment"
+          if grep -q -- '-X POST' "$GH_LOG"; then fail "comment-author posted a second comment"; fi
+
+          run_comment job-token JOB_TOKEN=app-token
+          grep -Fqx 'Looking for a budget comment by github-actions[bot].' "$OUT/job-token.log" \
+            || fail "the job's own token did not fall back to github-actions[bot]"
+          grep -q '^api -X POST repos/org/repo/issues/7/comments ' "$GH_LOG" || fail "the job's token did not post its own comment"
+
       - name: Verify deltas
         env:
           FAIL_OUTCOME: ${{ steps.fail-over-budget.outcome }}
@@ -1961,6 +2101,14 @@ jobs:
           paths: ${{ env.FIXTURES }}/small-skill
           comment-key: 'two words'
 
+      - name: Reject invalid comment author
+        id: bad-author
+        continue-on-error: true
+        uses: ./skill-budget
+        with:
+          paths: ${{ env.FIXTURES }}/small-skill
+          comment-author: 'my app'
+
       - name: Reject invalid token limit
         id: bad-limit
         continue-on-error: true
@@ -1982,6 +2130,7 @@ jobs:
           OUTCOMES: >-
             bad-fail=${{ steps.bad-fail.outcome }}
             bad-key=${{ steps.bad-key.outcome }}
+            bad-author=${{ steps.bad-author.outcome }}
             bad-limit=${{ steps.bad-limit.outcome }}
             plugin-path=${{ steps.plugin-path.outcome }}
         run: |
