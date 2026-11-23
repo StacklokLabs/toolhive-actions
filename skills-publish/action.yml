@@ -60,7 +60,16 @@ runs:
     - name: Start ToolHive Daemon
       id: daemon
       shell: bash
-      run: bash "$GITHUB_ACTION_PATH/../lib/daemon.sh" start
+      env:
+        INPUT_PUSH: ${{ inputs.push }}
+      # Pushing sends the job's OIDC token to the API server, so it never
+      # goes to a server that this action did not start.
+      run: |
+        if [ "$INPUT_PUSH" = "true" ]; then
+          bash "$GITHUB_ACTION_PATH/../lib/daemon.sh" start --owned
+        else
+          bash "$GITHUB_ACTION_PATH/../lib/daemon.sh" start
+        fi
 
     - name: Validate Skills and AI Plugins
       if: inputs.validate == 'true'

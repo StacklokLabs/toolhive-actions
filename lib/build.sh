@@ -13,8 +13,8 @@
 #
 #   bash "$GITHUB_ACTION_PATH/../lib/build.sh" require-oidc
 #     Fails unless the job can request a GitHub OIDC token. ToolHive signs
-#     pushes keylessly with that token and otherwise falls back to an
-#     interactive browser sign-in, which cannot work in CI.
+#     pushes keylessly with that token; without one, thv refuses to sign and
+#     the push fails, so this check fails first, before anything is built.
 
 set -euo pipefail
 

@@ -9,9 +9,9 @@
 #
 #   bash "$GITHUB_ACTION_PATH/publish.sh" publish
 #     Builds every directory for every tag, then pushes every reference when
-#     INPUT_PUSH is 'true', stopping at the first failed push. Outputs:
-#     references, references-json: only references that were pushed and
-#     signed, or built when not pushing.
+#     INPUT_PUSH is 'true', one tag at a time across all directories, stopping
+#     at the first failed push. Outputs: references, references-json: only
+#     references that were pushed and signed, or built when not pushing.
 #
 # Runs on the bash 3.2 that ships with macOS: no associative arrays, no
 # mapfile.
@@ -28,8 +28,15 @@ readonly TRUSTED_EVENTS="push release workflow_dispatch schedule"
 # One component of an OCI repository path, from the distribution spec.
 readonly OCI_COMPONENT='^[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*$'
 
+# First thv release that signs ai-plugin pushes; skill pushes are signed
+# from v0.45.0. An older thv would push unsigned.
+readonly SIGNED_PUSH_VERSION="0.48.0"
+
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)"
 readonly LIB_DIR
+
+# shellcheck source=lib/escape.sh
+source "$LIB_DIR/escape.sh"
 
 write_output() {
   printf '%s=%s\n' "$1" "$2" >> "${GITHUB_OUTPUT:?GITHUB_OUTPUT is not set}"
@@ -107,7 +114,7 @@ parse_tags() {
     tag=$(trim "$line")
     [ -z "$tag" ] && continue
     if ! [[ "$tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
-      echo "::error::Invalid tag '$tag'. Use a plain OCI tag such as v1.2.0 or latest, not a full reference." >&2
+      echo "::error::Invalid tag '$(escape_data "$tag")'. Use a plain OCI tag such as v1.2.0 or latest, not a full reference." >&2
       exit 1
     fi
     if [[ "$seen" == *$'\n'"$tag"$'\n'* ]]; then
@@ -117,6 +124,24 @@ parse_tags() {
     seen="${seen}${tag}"$'\n'
     printf '%s\n' "$tag"
   done <<< "${INPUT_TAGS:-}"
+}
+
+# Fails unless thv signs pushes by default. The summary and outputs say
+# "signed", which an older thv would not do.
+check_signed_push_version() {
+  local version major minor patch min_major min_minor min_patch
+  version=$(thv version --format json < /dev/null 2>/dev/null | jq -r '.version // empty' 2>/dev/null) || version=""
+  IFS=. read -r min_major min_minor min_patch <<< "$SIGNED_PUSH_VERSION"
+  if [[ "$version" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+    major="${BASH_REMATCH[1]}" minor="${BASH_REMATCH[2]}" patch="${BASH_REMATCH[3]}"
+    if [ "$major" -gt "$min_major" ] \
+      || { [ "$major" -eq "$min_major" ] && [ "$minor" -gt "$min_minor" ]; } \
+      || { [ "$major" -eq "$min_major" ] && [ "$minor" -eq "$min_minor" ] && [ "$patch" -ge "$min_patch" ]; }; then
+      return 0
+    fi
+  fi
+  echo "::error::Pushing needs thv v$SIGNED_PUSH_VERSION or later, which signs every push; this thv reports '$(escape_data "${version:-unknown}")'. Install a newer release with the install action."
+  exit 1
 }
 
 # Appends "<type>\t<name>\t<path>\t<prefix>" for each marked subdirectory of a
@@ -134,25 +159,34 @@ discover_root() {
       ;;
   esac
   if [ ! -d "$root" ]; then
-    echo "::error::The '$input' directory was not found: $root"
+    echo "::error::The '$input' directory was not found: $(escape_data "$root")"
     exit 1
   fi
+
+  # '*' skips hidden directories; say so when one looks like a skill or
+  # plugin. '.[!.]*' and '..?*' match every hidden name except . and ..
+  local hidden
+  for hidden in "$root"/.[!.]*/ "$root"/..?*/; do
+    if [ -d "$hidden" ] && [ -f "$hidden/$marker" ]; then
+      echo "::warning::Skipping $(escape_data "${hidden%/}"): hidden directories are not published."
+    fi
+  done
 
   for dir in "$root"/*/; do
     [ -d "$dir" ] || continue
     dir="${dir%/}"
     name="${dir##*/}"
     if [ -f "$dir/$SKILL_MARKER" ] && [ -f "$dir/$PLUGIN_MARKER" ]; then
-      echo "::error::$dir has both $SKILL_MARKER and $PLUGIN_MARKER; a directory must be either a skill or an AI-tool plugin."
+      echo "::error::$(escape_data "$dir") has both $SKILL_MARKER and $PLUGIN_MARKER; a directory must be either a skill or an AI-tool plugin."
       exit 1
     fi
     if [ ! -f "$dir/$marker" ]; then
-      echo "::warning::Skipping $dir: no $marker."
+      echo "::warning::Skipping $(escape_data "$dir"): no $marker."
       continue
     fi
     # The name becomes the last component of an OCI repository path.
     if ! [[ "$name" =~ $OCI_COMPONENT ]]; then
-      echo "::error::$dir cannot be published: the directory name becomes part of the OCI repository path, so it must be lowercase letters and digits separated by '.', '_', '__' or '-'."
+      echo "::error::$(escape_data "$dir") cannot be published: the directory name becomes part of the OCI repository path, so it must be lowercase letters and digits separated by '.', '_', '__' or '-'."
       exit 1
     fi
     printf '%s\t%s\t%s\t%s\n' "$type" "$name" "$dir" "$prefix" >> "$targets"
@@ -160,7 +194,7 @@ discover_root() {
   done
 
   if [ "$found" -eq 0 ]; then
-    echo "::error::No $type directories with $marker found under $root."
+    echo "::error::No $type directories with $marker found under $(escape_data "$root")."
     exit 1
   fi
 }
@@ -205,6 +239,9 @@ discover() {
     echo "::error::jq is required to write the references-json output."
     exit 1
   fi
+  if [ "${INPUT_PUSH:-false}" = "true" ]; then
+    check_signed_push_version
+  fi
 
   local temp_root work_dir targets
   temp_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
@@ -224,15 +261,17 @@ discover() {
   collisions=$(awk -F'\t' '{ key = $4 "/" $2; if (key in seen) print key; seen[key] = 1 }' "$targets")
   if [ -n "$collisions" ]; then
     while IFS= read -r collision; do
-      echo "::error::More than one directory would publish to $collision. Rename one, or set 'plugins-registry-prefix' to separate skills and plugins."
+      echo "::error::More than one directory would publish to $(escape_data "$collision"). Rename one, or set 'plugins-registry-prefix' to separate skills and plugins."
     done <<< "$collisions"
     exit 1
   fi
 
+  # The runner trims leading spaces before looking for a command, so a line
+  # must not start with a directory name.
   echo "Directories to publish:"
   local type name path target_prefix
   while IFS=$'\t' read -r type name path target_prefix; do
-    echo "  $path ($type) -> $target_prefix/$name"
+    echo "  - $path ($type) -> $target_prefix/$name"
   done < "$targets"
 
   # Validation reads the discovered directories as they are, not as the
@@ -258,8 +297,9 @@ publish() {
     tags+=("$tag")
   done < "$work_dir/tags"
 
-  # Build everything first, so nothing is pushed when any build fails.
-  local type name path prefix kind output reference
+  # Build everything first, so nothing is pushed when any build fails. Rows
+  # are "<kind>\t<name>\t<reference>\t<tag>".
+  local type name path prefix kind output reference index
   local -a references
   while IFS=$'\t' read -r type name path prefix; do
     kind=skill
@@ -269,20 +309,28 @@ publish() {
       references+=("$prefix/$name:$tag")
     done
     output=$(bash "$LIB_DIR/build.sh" build "$kind" "$path" "${references[@]}")
+    index=0
     while IFS= read -r reference; do
-      printf '%s\t%s\t%s\n' "$kind" "$name" "$reference" >> "$built"
+      printf '%s\t%s\t%s\t%s\n' "$kind" "$name" "$reference" "${tags[$index]}" >> "$built"
+      index=$((index + 1))
     done <<< "$output"
   done < "$targets"
 
-  local failed=""
+  # Push one tag at a time across all directories, so a failure leaves each
+  # tag either complete or untouched for the directories before it, and the
+  # last tags, such as latest, move only after the others are published.
+  local failed="" row_tag
   if [ "${INPUT_PUSH:-false}" = "true" ]; then
-    while IFS=$'\t' read -r kind name reference; do
-      if ! bash "$LIB_DIR/build.sh" push "$kind" "$reference"; then
-        failed="$reference"
-        break
-      fi
-      printf '%s\t%s\t%s\n' "$kind" "$name" "$reference" >> "$published"
-    done < "$built"
+    for tag in "${tags[@]}"; do
+      while IFS=$'\t' read -r kind name reference row_tag; do
+        [ "$row_tag" = "$tag" ] || continue
+        if ! bash "$LIB_DIR/build.sh" push "$kind" "$reference"; then
+          failed="$reference"
+          break 2
+        fi
+        printf '%s\t%s\t%s\t%s\n' "$kind" "$name" "$reference" "$row_tag" >> "$published"
+      done < "$built"
+    done
   else
     cp "$built" "$published"
   fi
@@ -290,13 +338,15 @@ publish() {
   write_multiline_output references "$(cut -f3 "$published")"
   write_output references-json "$(jq -R -s -c '
     split("\n") | map(select(length > 0) | split("\t"))
-    | reduce .[] as $row ({}; .[$row[1]] += [$row[2]])' "$published")"
+    | reduce .[] as $row ({skills: {}, plugins: {}};
+        (if $row[0] == "skill" then "skills" else "plugins" end) as $type
+        | .[$type][$row[1]] += [$row[2]])' "$published")"
   write_summary "$built" "$published" "$failed"
 
   if [ -n "$failed" ]; then
     # ToolHive uploads a reference before signing it, so a push that failed
     # while signing can leave the tag in the registry without a signature.
-    echo "::error::Stopped at the first failed push ($failed). That tag may already be in the registry without a signature: rerun the job to push and sign it again, or delete the tag. The outputs list only references that were pushed and signed."
+    echo "::error::Stopped at the first failed push ($failed). That tag may already be in the registry without a signature: rerun the job to push and sign it again, unless a newer release has published since, or delete the tag. The outputs list only references that were pushed and signed."
     exit 1
   fi
 }
@@ -315,9 +365,9 @@ write_summary() {
     echo
     echo "| Name | Type | Reference | Status |"
     echo "|------|------|-----------|--------|"
-    local kind name reference row_status
-    while IFS=$'\t' read -r kind name reference; do
-      if grep -Fqx -- "$(printf '%s\t%s\t%s' "$kind" "$name" "$reference")" "$published"; then
+    local kind name reference tag row_status
+    while IFS=$'\t' read -r kind name reference tag; do
+      if grep -Fqx -- "$(printf '%s\t%s\t%s\t%s' "$kind" "$name" "$reference" "$tag")" "$published"; then
         row_status="✅ $status"
       elif [ "$reference" = "$failed" ]; then
         row_status="❌ Push failed; the tag may be in the registry unsigned"
