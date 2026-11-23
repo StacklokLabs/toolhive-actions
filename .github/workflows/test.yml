@@ -24,7 +24,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       
       - name: Test Install Action
         id: install
@@ -55,7 +55,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       
       - name: Install ToolHive
         uses: ./install
@@ -85,7 +85,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       
       - name: First Install (No Cache)
         id: first-install
@@ -117,7 +117,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       
       - name: Install ToolHive
         uses: ./install
@@ -150,7 +150,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install ToolHive
         uses: ./install
@@ -208,7 +208,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install ToolHive
         uses: ./install
@@ -413,7 +413,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install latest ToolHive
         uses: ./install
@@ -597,7 +597,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Create fake ToolHive environment
         run: |
@@ -744,7 +744,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Stop a zombie and a live process with ps
         run: |
@@ -792,7 +792,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install ToolHive
         uses: ./install
@@ -970,7 +970,7 @@ jobs:
       FIXTURES: skill-validate/testdata
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install ToolHive ${{ matrix.thv-version }}
         uses: ./install
@@ -1230,7 +1230,7 @@ jobs:
       PLUGINS_PREFIX: ghcr.io/stacklok/toolhive-actions-ci/plugins
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install latest ToolHive
         uses: ./install
@@ -1578,7 +1578,7 @@ jobs:
       COMMENT_KEY: ci-selftest-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Measure fixtures
         id: measure
@@ -2155,7 +2155,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install latest ToolHive
         uses: ./install
@@ -2325,7 +2325,7 @@ jobs:
       REPO: skill-refs/testdata/repo
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Check fixtures with the default allowlist
         id: default
@@ -2651,7 +2651,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Run shellcheck
         run: |
@@ -2667,7 +2667,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup yq
         uses: mikefarah/yq@v4
