@@ -2150,6 +2150,169 @@ jobs:
           $FAILED && exit 1
           echo "All invalid inputs were rejected."
 
+  test-build-actions-guards:
+    name: Test Build Action Validation and Signing Guards
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install latest ToolHive
+        uses: ./install
+        with:
+          version: latest
+
+      # No job in this workflow has id-token: write, so pushing must be
+      # refused before anything is built.
+      - name: Refuse skill push without an OIDC token
+        id: skill-push
+        continue-on-error: true
+        uses: ./skill-build
+        with:
+          path: skills-publish/testdata/skills/alpha
+          # A closed local port, so a later permission change cannot make this push.
+          tags: 127.0.0.1:9/ci/alpha:must-not-build
+          push: 'true'
+
+      - name: Refuse plugin push without an OIDC token
+        id: plugin-push
+        continue-on-error: true
+        uses: ./ai-plugin-build
+        with:
+          path: skills-publish/testdata/plugins/gamma
+          tags: 127.0.0.1:9/ci/gamma:must-not-build
+          push: 'true'
+
+      - name: Reject a push value that is not exactly true or false
+        id: skill-push-case
+        continue-on-error: true
+        uses: ./skill-build
+        with:
+          path: skills-publish/testdata/skills/alpha
+          tags: 127.0.0.1:9/ci/alpha:must-not-build
+          push: 'TRUE'
+
+      - name: Refuse to build an invalid skill
+        id: invalid-skill
+        continue-on-error: true
+        uses: ./skill-build
+        with:
+          path: skill-validate/testdata/invalid/long-description
+          tags: ghcr.io/stacklok/toolhive-actions-ci/long-description:must-not-build
+
+      - name: Build a skill under two tags
+        id: skill-tags
+        uses: ./skill-build
+        with:
+          path: skills-publish/testdata/skills/alpha
+          tags: |
+            ghcr.io/stacklok/toolhive-actions-ci/alpha:one
+            ghcr.io/stacklok/toolhive-actions-ci/alpha:two
+
+      - name: Build a plugin under two tags
+        id: plugin-tags
+        uses: ./ai-plugin-build
+        with:
+          path: skills-publish/testdata/plugins/gamma
+          tags: |
+            ghcr.io/stacklok/toolhive-actions-ci/gamma:one
+            ghcr.io/stacklok/toolhive-actions-ci/gamma:two
+
+      - name: Verify refused runs
+        env:
+          OUTCOMES: >-
+            skill-push=${{ steps.skill-push.outcome }}
+            plugin-push=${{ steps.plugin-push.outcome }}
+            skill-push-case=${{ steps.skill-push-case.outcome }}
+            invalid-skill=${{ steps.invalid-skill.outcome }}
+        run: |
+          FAILED=false
+          for ENTRY in $OUTCOMES; do
+            if [ "${ENTRY#*=}" != "failure" ]; then
+              echo "Error: ${ENTRY%%=*} was not refused (outcome: ${ENTRY#*=})"
+              FAILED=true
+            fi
+          done
+          $FAILED && exit 1
+          echo "All guarded runs were refused."
+
+      - name: Start ToolHive Daemon for Build Listing Checks
+        id: daemon
+        run: bash ./lib/daemon.sh start
+
+      - name: Refuse each guarded run for its own reason
+        env:
+          TOOLHIVE_API_URL: ${{ steps.daemon.outputs.url }}
+        run: |
+          FAILED=false
+          # Runs one inline step of an action with the given overrides, as the
+          # runner does; it must fail with the exact error.
+          refuse() {
+            local action="$1" step="$2" name="$3" expected="$4"
+            shift 4
+            yq ".runs.steps[] | select(.name == \"$step\") | .run" "$action/action.yml" > "$RUNNER_TEMP/step.sh"
+            if env GITHUB_ACTION_PATH="$GITHUB_WORKSPACE/$action" GITHUB_OUTPUT=/dev/null \
+              INPUT_TAG= INPUT_TAGS=127.0.0.1:9/ci/x:must-not-build INPUT_PUSH=false "$@" \
+              bash --noprofile --norc -eo pipefail "$RUNNER_TEMP/step.sh" > "$RUNNER_TEMP/refuse.log" 2>&1; then
+              cat "$RUNNER_TEMP/refuse.log"
+              echo "Error: $name was accepted"
+              FAILED=true
+            elif ! grep -Fq -- "$expected" "$RUNNER_TEMP/refuse.log"; then
+              cat "$RUNNER_TEMP/refuse.log"
+              echo "Error: $name failed without the expected error: $expected"
+              FAILED=true
+            fi
+          }
+          NO_OIDC="::error::Pushing signs artifacts with the job's GitHub OIDC token, but this job cannot request one. Add 'permissions: id-token: write' to the job."
+          refuse skill-build "Check Inputs and Prerequisites" skill-push "$NO_OIDC" \
+            INPUT_PATH=skills-publish/testdata/skills/alpha INPUT_PUSH=true
+          refuse ai-plugin-build "Check Inputs and Prerequisites" plugin-push "$NO_OIDC" \
+            INPUT_PATH=skills-publish/testdata/plugins/gamma INPUT_PUSH=true
+          refuse skill-build "Check Inputs and Prerequisites" skill-push-case \
+            "::error::The 'push' input must be exactly push: 'true' or push: 'false'." \
+            INPUT_PATH=skills-publish/testdata/skills/alpha INPUT_PUSH=TRUE
+          refuse skill-build "Check Inputs and Prerequisites" line-break-path \
+            "::error::The 'path' input must not contain a tab or line break." \
+            INPUT_PATH=$'skills-publish/testdata/skills/alpha\nother'
+          # Validation annotates the finding on the skill's own file.
+          refuse skill-build "Validate Skill" invalid-skill \
+            "::error file=skill-validate/testdata/invalid/long-description/SKILL.md" \
+            INPUT_PATH=skill-validate/testdata/invalid/long-description
+          refuse ai-plugin-build "Validate AI Plugin" invalid-plugin \
+            "::error file=skill-validate/testdata/invalid/invalid-plugin/" \
+            INPUT_PATH=skill-validate/testdata/invalid/invalid-plugin
+          $FAILED && exit 1
+          echo "Every guarded run was refused for its own reason."
+
+      - name: Verify digests, and that refused runs built nothing
+        env:
+          TOOLHIVE_API_URL: ${{ steps.daemon.outputs.url }}
+        run: |
+          SKILLS=$(thv skill builds --format json)
+          PLUGINS=$(thv ai-plugin builds --format json)
+          printf '%s\n%s\n' "$SKILLS" "$PLUGINS"
+          if printf '%s%s' "$SKILLS" "$PLUGINS" | grep -Fq 'must-not-build'; then
+            echo "Error: a refused run built an artifact"
+            exit 1
+          fi
+          # Builds are reproducible: the same content gets one digest under
+          # every tag, as the READMEs state.
+          for NAME in alpha gamma; do
+            DIGESTS=$(printf '%s\n%s\n' "$SKILLS" "$PLUGINS" | jq -s --arg name "$NAME" \
+              '[add[] | select(.tag | test("/" + $name + ":(one|two)$")) | .digest] | unique')
+            if [ "$(printf '%s' "$DIGESTS" | jq 'length')" != "1" ]; then
+              echo "Error: $NAME builds under two tags have different digests: $DIGESTS"
+              exit 1
+            fi
+          done
+
+      - name: Stop ToolHive Daemon
+        if: always() && steps.daemon.outputs.started == 'true'
+        env:
+          DAEMON_PID: ${{ steps.daemon.outputs.pid }}
+          DAEMON_STARTED: ${{ steps.daemon.outputs.started }}
+        run: bash ./lib/daemon.sh stop
+
   lint-shell:
     name: Lint Shared Shell Scripts
     runs-on: ubuntu-latest
