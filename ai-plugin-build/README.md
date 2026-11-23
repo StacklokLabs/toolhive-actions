@@ -5,6 +5,7 @@ Build and optionally push an AI-tool plugin with [ToolHive](https://github.com/s
 ## Prerequisites
 
 - ToolHive CLI v0.48.0 or later (use the [install action](../install/README.md))
+- `jq`, which is preinstalled on GitHub-hosted runners
 - For publishing, authentication to the target OCI registry
 
 ## Plugin Layout
@@ -33,7 +34,7 @@ A minimal manifest is:
 }
 ```
 
-The action checks that the directory and manifest exist, then runs `thv ai-plugin validate` before building.
+The action checks that the directory and manifest exist, then validates the plugin before building, with [`skill-validate`](../skill-validate/README.md)'s checks and annotations.
 
 ## Inputs
 
@@ -125,7 +126,7 @@ jobs:
           push: 'true'
 ```
 
-The action deliberately relies on ToolHive's signed push default and does not expose unsigned or signing configuration. With `push: 'true'`, it fails before building when the job cannot request an OIDC token, instead of waiting for an interactive sign-in that cannot complete in CI.
+The action deliberately relies on ToolHive's signed push default and does not expose unsigned or signing configuration. With `push: 'true'`, it fails before building when the job cannot request an OIDC token, since ToolHive would refuse to sign and the push would fail after the build.
 
 ## Platform Support
 
@@ -135,4 +136,4 @@ The action deliberately relies on ToolHive's signed push default and does not ex
 | macOS | Supported |
 | Windows | Untested |
 
-AI-tool plugin build and push package OCI artifacts and do not require an MCP server container runtime. The action reuses a reachable ToolHive API configured by `TOOLHIVE_API_URL` (a health check answering 204, or 503 when no container runtime is available); otherwise it starts a loopback daemon and stops only that action-owned process.
+AI-tool plugin build and push package OCI artifacts and do not require an MCP server container runtime. Without pushing, the action reuses a reachable ToolHive API configured by `TOOLHIVE_API_URL` (a health check answering 204, or 503 when no container runtime is available); otherwise it starts a loopback daemon. With `push: 'true'`, it always starts its own, because pushing sends the job's OIDC token to that daemon. It stops only a daemon it started.

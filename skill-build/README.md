@@ -7,11 +7,12 @@ Build and optionally push a [ToolHive](https://github.com/stacklok/toolhive) ski
 - Build a skill from a local directory containing a `SKILL.md`
 - Build one artifact for each requested OCI reference
 - Optionally push every built artifact to any OCI-compatible registry (ghcr.io, Docker Hub, etc.)
-- Validates the skill with `thv skill validate` and checks tag input before building
+- Validates the skill with [`skill-validate`](../skill-validate/README.md)'s checks and annotations, and checks tag input, before building
 
 ## Prerequisites
 
 - ToolHive CLI must be installed (use the [install action](../install/README.md))
+- `jq`, which is preinstalled on GitHub-hosted runners
 - For pushing: registry credentials must be configured before this action runs (e.g., via [docker/login-action](https://github.com/docker/login-action))
 
 ## Inputs
@@ -163,10 +164,10 @@ See the [Agent Skills Specification](https://agentskills.io/specification) for t
 
 ## Security
 
-- The action runs `thv skill validate` before building, so an invalid skill fails without building anything
-- With `push: 'true'`, the action fails before building unless the job can request an OIDC token (`permissions: id-token: write`). ToolHive signs pushed skills keylessly with that token; without it, ToolHive would fall back to an interactive browser sign-in that cannot complete in CI
+- The action validates the skill before building, so an invalid skill fails without building anything. Findings are annotated on their file and line, as in [`skill-validate`](../skill-validate/README.md)
+- With `push: 'true'`, the action fails before building unless the job can request an OIDC token (`permissions: id-token: write`). ToolHive signs pushed skills keylessly with that token; without it, ToolHive refuses to sign and the push fails, so the action fails first, before building
 - No registry credentials are handled by this action — use a dedicated login action (e.g., `docker/login-action`) to configure credentials before pushing
-- The action reuses a ToolHive daemon reachable at `TOOLHIVE_API_URL` (default `http://127.0.0.1:8080`) whose health check answers 204 or 503; otherwise it starts one on a random loopback port and stops only that action-owned process
+- Without pushing, the action reuses a ToolHive daemon reachable at `TOOLHIVE_API_URL` (default `http://127.0.0.1:8080`) whose health check answers 204 or 503; otherwise it starts one on a random loopback port. With `push: 'true'`, it always starts its own, because pushing sends the job's OIDC token to that daemon. It stops only a daemon it started
 
 ## Troubleshooting
 

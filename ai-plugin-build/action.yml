@@ -60,6 +60,14 @@ runs:
           TAG_REFERENCES+=("$REFERENCE")
         done <<< "$INPUT_TAGS"
 
+        # The validation target list holds one tab-separated directory per line.
+        case "$INPUT_PATH" in
+          *$'\t'* | *$'\n'*)
+            echo "::error::The 'path' input must not contain a tab or line break."
+            exit 1
+            ;;
+        esac
+
         if ! command -v thv &> /dev/null; then
           echo "::error::ToolHive CLI (thv) is not installed. Please use the install action first."
           exit 1
@@ -75,8 +83,13 @@ runs:
           exit 1
         fi
 
-        # Pushing signs with the job's OIDC token; fail now rather than wait
-        # for an interactive sign-in.
+        if ! command -v jq &> /dev/null; then
+          echo "::error::jq is required to read validation results."
+          exit 1
+        fi
+
+        # Pushing signs with the job's OIDC token, and without one thv refuses
+        # to sign; fail now, before building, with a clearer message.
         if [ "$INPUT_PUSH" = "true" ]; then
           bash "$GITHUB_ACTION_PATH/../lib/build.sh" require-oidc
         fi
@@ -84,14 +97,29 @@ runs:
     - name: Start ToolHive Daemon
       id: daemon
       shell: bash
-      run: bash "$GITHUB_ACTION_PATH/../lib/daemon.sh" start
+      env:
+        INPUT_PUSH: ${{ inputs.push }}
+      # Pushing sends the job's OIDC token to the API server, so it never
+      # goes to a server that this action did not start.
+      run: |
+        if [ "$INPUT_PUSH" = "true" ]; then
+          bash "$GITHUB_ACTION_PATH/../lib/daemon.sh" start --owned
+        else
+          bash "$GITHUB_ACTION_PATH/../lib/daemon.sh" start
+        fi
 
     - name: Validate AI Plugin
       shell: bash
       env:
         TOOLHIVE_API_URL: ${{ steps.daemon.outputs.url }}
         INPUT_PATH: ${{ inputs.path }}
-      run: thv ai-plugin validate "$INPUT_PATH"
+        INPUT_FAIL_ON_WARNINGS: 'false'
+      # skill-validate's script annotates findings on their file and line. It
+      # reads the directory from a target list.
+      run: |
+        WORK_DIR=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/toolhive-validate.XXXXXX")
+        printf '%s\t%s\n' plugin "$INPUT_PATH" > "$WORK_DIR/targets.tsv"
+        WORK_DIR="$WORK_DIR" bash "$GITHUB_ACTION_PATH/../skill-validate/validate.sh" validate
 
     - name: Build AI Plugin
       id: build
