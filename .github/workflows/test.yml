@@ -1105,80 +1105,121 @@ jobs:
             fail "a failing run did not stop its daemon"
           fi
 
-      - name: Reject recursive glob
+      - name: Verify annotations, the step summary and untrusted names
+        env:
+          THV_VERSION: ${{ matrix.thv-version }}
+        run: |
+          fail() { echo "Error: $*"; exit 1; }
+          OUT="$RUNNER_TEMP/annotations"
+          mkdir -p "$OUT"
+          GITHUB_OUTPUT="$OUT/daemon" bash lib/daemon.sh start
+          TOOLHIVE_API_URL=$(sed -n 's/^url=//p' "$OUT/daemon")
+          export TOOLHIVE_API_URL
+          stop_daemon() {
+            DAEMON_PID=$(sed -n 's/^pid=//p' "$OUT/daemon") DAEMON_STARTED=$(sed -n 's/^started=//p' "$OUT/daemon") \
+              GITHUB_OUTPUT=/dev/null bash "$GITHUB_WORKSPACE/lib/daemon.sh" stop
+          }
+          trap stop_daemon EXIT
+          # Runs both phases from a directory; the log and summary are <name>.log and <name>.md.
+          run_validate() {
+            local dir="$1" paths="$2" name="$3" work
+            : > "$OUT/$name.out"
+            (
+              cd "$dir"
+              export GITHUB_OUTPUT="$OUT/$name.out" GITHUB_STEP_SUMMARY="$OUT/$name.md" INPUT_PATHS="$paths"
+              bash "$GITHUB_WORKSPACE/skill-validate/validate.sh" resolve || exit
+              work=$(sed -n 's/^work-dir=//p' "$GITHUB_OUTPUT")
+              WORK_DIR="$work" bash "$GITHUB_WORKSPACE/skill-validate/validate.sh" validate
+            ) > "$OUT/$name.log" 2>&1 || true
+            cat "$OUT/$name.log"
+          }
+          # Lines the runner would read as a workflow command: it trims leading spaces first.
+          commands() { sed 's/^[[:space:]]*//' "$OUT/$1.log" | grep '^::' || true; }
+
+          run_validate . "$FIXTURES/skills/long-skill
+            $FIXTURES/skills/broken-refs" fixtures
+          grep -Fqx '| skill-validate/testdata/skills/long-skill | skill | ⚠️ Warnings | 0 | 1 |' "$OUT/fixtures.md" \
+            || fail "the step summary has no row for long-skill"
+          if [ "$THV_VERSION" = "v0.48.0" ]; then
+            commands fixtures | grep -Fq '::warning file=skill-validate/testdata/skills/long-skill/SKILL.md,title=thv validate::' \
+              || fail "no file-level annotation for long-skill"
+          else
+            commands fixtures | grep -Fq '::warning file=skill-validate/testdata/skills/broken-refs/SKILL.md,line=8,title=ref-unresolved::' \
+              || fail "no line annotation for the broken reference"
+            grep -Fq -- '- ⚠️ `ref-unresolved` SKILL.md:8: ' "$OUT/fixtures.md" || fail "the step summary does not list the broken reference"
+          fi
+
+          # 'paths: .' annotates the file relative to the workspace, without './'.
+          run_validate "$FIXTURES/skills/long-skill" . dot
+          commands dot | grep -Fq '::warning file=skill-validate/testdata/skills/long-skill/SKILL.md,' \
+            || fail "'paths: .' was not annotated relative to the workspace"
+
+          # Directory names from a pull request: a spoofed command and a name read as a flag.
+          mkdir -p "$RUNNER_TEMP/untrusted"
+          cp -R "$FIXTURES/skills/valid-skill" "$RUNNER_TEMP/untrusted/::notice title=Spoofed::all skills passed"
+          cp -R "$FIXTURES/skills/valid-skill" "$RUNNER_TEMP/untrusted/-x"
+          run_validate "$RUNNER_TEMP/untrusted" '*' untrusted
+          if commands untrusted | grep -q '^::notice title=Spoofed'; then fail "a directory name became a workflow command"; fi
+          grep -Fqx '  - ::notice title=Spoofed::all skills passed (skill)' "$OUT/untrusted.log" || fail "the spoofed directory is not listed"
+          if grep -Eq 'invalid option|unknown shorthand flag' "$OUT/untrusted.log"; then fail "'-x' was read as an option"; fi
+          REPORT=$(sed -n 's/^report-file=//p' "$OUT/untrusted.out")
+          jq -e '[.results[].path] | sort == ["-x", "::notice title=Spoofed::all skills passed"]' "$REPORT" >/dev/null \
+            || fail "both untrusted directories should be validated"
+
+          # A line break in a name is refused, and encoded so it cannot start a second command.
+          mkdir -p "$RUNNER_TEMP/linebreak/x"$'\n'"::warning file=README.md,line=1,title=Injected::pwned"
+          run_validate "$RUNNER_TEMP/linebreak" '*' linebreak
+          if commands linebreak | grep -q '^::warning file=README.md'; then fail "a line break in a name injected a command"; fi
+          commands linebreak | grep -Fqx '::error::Matched path contains a line break or tab, which is not supported: x%0A::warning file=README.md,line=1,title=Injected::pwned' \
+            || fail "the name with a line break was not refused"
+
+      - name: Reject recursive glob through the action
         id: recursive-glob
         continue-on-error: true
         uses: ./skill-validate
         with:
-          paths: ${{ env.FIXTURES }}/**
-
-      - name: Reject glob without skills or plugins
-        id: empty-glob
-        continue-on-error: true
-        uses: ./skill-validate
-        with:
-          paths: ${{ env.FIXTURES }}/skills/not-*
-
-      - name: Reject directory that is not a skill or plugin
-        id: not-a-skill
-        continue-on-error: true
-        uses: ./skill-validate
-        with:
-          paths: ${{ env.FIXTURES }}/skills/not-a-skill
-
-      - name: Reject directory with both markers
-        id: both-markers
-        continue-on-error: true
-        uses: ./skill-validate
-        with:
-          paths: ${{ env.FIXTURES }}/invalid/both-markers
-
-      - name: Reject missing directory
-        id: missing
-        continue-on-error: true
-        uses: ./skill-validate
-        with:
-          paths: ${{ env.FIXTURES }}/skills/does-not-exist
-
-      - name: Reject blank paths
-        id: blank
-        continue-on-error: true
-        uses: ./skill-validate
-        with:
-          paths: "  \n\t\n"
-
-      - name: Reject invalid fail-on-warnings value
-        id: bad-flag
-        continue-on-error: true
-        uses: ./skill-validate
-        with:
-          paths: ${{ env.FIXTURES }}/skills/valid-skill
-          fail-on-warnings: 'TRUE'
+          paths: ${{ env.FIXTURES }}/skills/**
 
       - name: Verify rejected inputs
         env:
-          OUTCOMES: >-
-            recursive-glob=${{ steps.recursive-glob.outcome }}
-            empty-glob=${{ steps.empty-glob.outcome }}
-            not-a-skill=${{ steps.not-a-skill.outcome }}
-            both-markers=${{ steps.both-markers.outcome }}
-            missing=${{ steps.missing.outcome }}
-            blank=${{ steps.blank.outcome }}
-            bad-flag=${{ steps.bad-flag.outcome }}
+          RECURSIVE_GLOB_OUTCOME: ${{ steps.recursive-glob.outcome }}
         run: |
-          FAILED=false
-          for ENTRY in $OUTCOMES; do
-            if [ "${ENTRY#*=}" != "failure" ]; then
-              echo "Error: ${ENTRY%%=*} was not rejected (outcome: ${ENTRY#*=})"
-              FAILED=true
-            fi
-          done
-          $FAILED && exit 1
+          [ "$RECURSIVE_GLOB_OUTCOME" = "failure" ] || { echo "Error: the action accepted '**'"; exit 1; }
           if pgrep -f '[t]hv serve' >/dev/null; then
             echo "Error: a rejected run left a daemon running"
             exit 1
           fi
-          echo "All invalid inputs were rejected."
+          FAILED=false
+          # Each input must fail with its own error, not with any failure.
+          reject() {
+            local name="$1" paths="$2" flag="$3" expected="$4"
+            if GITHUB_OUTPUT=/dev/null RUNNER_TEMP="$RUNNER_TEMP" INPUT_PATHS="$paths" INPUT_FAIL_ON_WARNINGS="$flag" \
+              bash skill-validate/validate.sh resolve > "$RUNNER_TEMP/reject.log" 2>&1; then
+              cat "$RUNNER_TEMP/reject.log"
+              echo "Error: $name was accepted"
+              FAILED=true
+            elif ! grep -Fqx -- "$expected" "$RUNNER_TEMP/reject.log"; then
+              cat "$RUNNER_TEMP/reject.log"
+              echo "Error: $name failed without the expected error: $expected"
+              FAILED=true
+            fi
+          }
+          reject recursive-glob "$FIXTURES/skills/**" false \
+            "::error::The 'paths' input does not support '**' ($FIXTURES/skills/**). List each level instead, for example 'skills/*' and 'plugins/*'; a plugin's bundled skills are validated with the plugin."
+          reject empty-glob "$FIXTURES/skills/not-*" false \
+            "::error::The pattern '$FIXTURES/skills/not-*' matched no skill or AI-tool plugin directories."
+          reject not-a-skill "$FIXTURES/skills/not-a-skill" false \
+            "::error::$FIXTURES/skills/not-a-skill is not a skill or AI-tool plugin directory (no SKILL.md or .claude-plugin/plugin.json)."
+          reject both-markers "$FIXTURES/invalid/both-markers" false \
+            "::error::$FIXTURES/invalid/both-markers has both SKILL.md and .claude-plugin/plugin.json; a directory must be either a skill or an AI-tool plugin."
+          reject missing "$FIXTURES/skills/does-not-exist" false \
+            "::error::Directory not found: $FIXTURES/skills/does-not-exist"
+          reject blank $'  \n\t\n' false \
+            "::error::The 'paths' input is required. List skill or AI-tool plugin directories, one per line."
+          reject bad-flag "$FIXTURES/skills/valid-skill" TRUE \
+            "::error::The 'fail-on-warnings' input must be exactly 'true' or 'false'."
+          $FAILED && exit 1
+          echo "All invalid inputs were rejected with their own errors."
 
   lint-shell:
     name: Lint Shared Shell Scripts
