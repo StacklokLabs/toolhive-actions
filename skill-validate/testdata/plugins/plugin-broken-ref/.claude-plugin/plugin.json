@@ -1,0 +1,9 @@
+{
+  "name": "plugin-broken-ref",
+  "description": "Fixture AI-tool plugin whose bundled skill has a broken link",
+  "version": "0.1.0",
+  "author": {
+    "name": "Stacklok"
+  },
+  "skills": ["./skills/helper"]
+}
