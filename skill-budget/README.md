@@ -46,8 +46,8 @@ The base commit must be in the checkout. The default `actions/checkout` fetches 
 
 With `comment: 'true'`, the action keeps one comment per pull request, found by the hidden marker `<!-- toolhive-skill-budget:<comment-key> -->` and written by the same account as the token, so it never overwrites someone else's comment:
 - It posts or updates the comment when a value changed or a limit is exceeded.
-- When nothing changed, it updates an existing comment to "No budget changes" and posts nothing new.
-- When the base commit is not in the checkout, it leaves an existing comment unchanged, because without deltas it can't tell whether anything changed.
+- When nothing changed against the base, it updates an existing comment to "No budget changes" and posts nothing new.
+- When the base commit is not in the checkout, or `base-ref` is empty, there are no deltas. It then updates an existing comment with the current numbers and a note, rather than claiming nothing changed, and posts a new one only when a limit is exceeded.
 
 The comment is skipped, with a notice:
 - outside `pull_request` events,

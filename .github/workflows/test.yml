@@ -1756,12 +1756,66 @@ jobs:
           comment: 'true'
           comment-key: ${{ env.COMMENT_KEY }}
 
-      - name: Keep the sticky comment when the base is unavailable
-        id: keep
+      - name: Verify the sticky comment shows the breach
+        if: env.CAN_COMMENT == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          POSTED_ID: ${{ steps.post.outputs.comment-id }}
+          UPDATED_ID: ${{ steps.comment.outputs.comment-id }}
+        run: |
+          if [ -z "$POSTED_ID" ] || [ "$POSTED_ID" != "$UPDATED_ID" ]; then
+            echo "Error: the second run did not update the posted comment (posted '$POSTED_ID', updated '$UPDATED_ID')"
+            exit 1
+          fi
+          BODY=$(gh api "repos/$GITHUB_REPOSITORY/issues/comments/$POSTED_ID" --jq .body)
+          printf '%s\n' "$BODY"
+          grep -Fq '❌ Over budget' <<< "$BODY" || { echo "Error: the comment does not show the breach"; exit 1; }
+
+      # The breach is fixed, but the base commit is missing: the comment must
+      # show the current numbers rather than keep the stale breach.
+      - name: Refresh the sticky comment when the base is unavailable
+        id: refresh-unavailable
+        if: env.CAN_COMMENT == 'true'
         uses: ./skill-budget
         with:
           paths: ${{ runner.temp }}/budget-repo/skills/small-skill
           base-ref: 0123456789abcdef0123456789abcdef01234567
+          comment: 'true'
+          comment-key: ${{ env.COMMENT_KEY }}
+
+      - name: Verify the refreshed comment has current numbers
+        if: env.CAN_COMMENT == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          POSTED_ID: ${{ steps.post.outputs.comment-id }}
+          REFRESHED_ID: ${{ steps.refresh-unavailable.outputs.comment-id }}
+        run: |
+          [ "$REFRESHED_ID" = "$POSTED_ID" ] || { echo "Error: expected comment $POSTED_ID to be updated, got '$REFRESHED_ID'"; exit 1; }
+          BODY=$(gh api "repos/$GITHUB_REPOSITORY/issues/comments/$POSTED_ID" --jq .body)
+          printf '%s\n' "$BODY"
+          ! grep -Fq 'Over budget' <<< "$BODY" || { echo "Error: the stale breach is still shown"; exit 1; }
+          ! grep -Fq 'No budget changes' <<< "$BODY" || { echo "Error: claimed no changes without a base"; exit 1; }
+          grep -Fq 'small-skill' <<< "$BODY" || { echo "Error: the current numbers are missing"; exit 1; }
+          grep -Fq 'base commit is not in the checkout' <<< "$BODY" || { echo "Error: the missing-base note is missing"; exit 1; }
+
+      - name: Refresh the sticky comment with an empty base-ref
+        id: refresh-none
+        if: env.CAN_COMMENT == 'true'
+        uses: ./skill-budget
+        with:
+          paths: ${{ runner.temp }}/budget-repo/skills/small-skill
+          # An unset repository variable expands to an empty string.
+          base-ref: ${{ vars.TOOLHIVE_ACTIONS_UNSET_VARIABLE }}
+          comment: 'true'
+          comment-key: ${{ env.COMMENT_KEY }}
+
+      - name: Report no changes against an available base
+        id: unchanged
+        if: env.CAN_COMMENT == 'true'
+        uses: ./skill-budget
+        with:
+          paths: ${{ runner.temp }}/budget-deleted/skills/small-skill
+          base-ref: ${{ steps.more-repos.outputs.deleted-base }}
           comment: 'true'
           comment-key: ${{ env.COMMENT_KEY }}
 
@@ -1771,26 +1825,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           POSTED_ID: ${{ steps.post.outputs.comment-id }}
-          KEPT_ID: ${{ steps.keep.outputs.comment-id }}
-          UPDATED_ID: ${{ steps.comment.outputs.comment-id }}
+          NONE_ID: ${{ steps.refresh-none.outputs.comment-id }}
+          UNCHANGED_ID: ${{ steps.unchanged.outputs.comment-id }}
         run: |
-          if [ -z "$POSTED_ID" ] || [ "$POSTED_ID" != "$UPDATED_ID" ]; then
-            echo "Error: the second run did not update the posted comment (posted '$POSTED_ID', updated '$UPDATED_ID')"
-            exit 1
-          fi
-          if [ -n "$KEPT_ID" ]; then
-            echo "Error: a run without its base commit changed the comment"
-            exit 1
-          fi
+          [ "$NONE_ID" = "$POSTED_ID" ] || { echo "Error: an empty base-ref did not refresh the comment"; exit 1; }
+          [ "$UNCHANGED_ID" = "$POSTED_ID" ] || { echo "Error: no changes did not update the comment"; exit 1; }
           COMMENTS=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" | jq -s --arg marker "<!-- toolhive-skill-budget:$COMMENT_KEY -->" \
             'add // [] | map(select(.body | startswith($marker)))')
-          printf '%s\n' "$COMMENTS" | jq '[.[] | {id, body: .body[0:200]}]'
+          printf '%s\n' "$COMMENTS" | jq '[.[] | {id, body: .body[0:300]}]'
           if [ "$(printf '%s' "$COMMENTS" | jq 'length')" != "1" ]; then
             echo "Error: expected exactly one sticky comment"
             exit 1
           fi
-          if ! printf '%s' "$COMMENTS" | jq -e '.[0].body | contains("❌ Over budget")' >/dev/null; then
-            echo "Error: the sticky comment does not contain the report"
+          if ! printf '%s' "$COMMENTS" | jq -e '.[0].body | contains("No budget changes against the base.")' >/dev/null; then
+            echo "Error: the comment does not report no changes against the base"
             exit 1
           fi
 

@@ -427,19 +427,28 @@ comment() {
     add // [] | map(select((.user.login | bare) == ($login | bare) and (.body | startswith($marker))))
     | .[0].id // empty')
 
-  local body
-  if [ "$(jq -r '.changed' "$report")" = "true" ]; then
+  local body changed comparison note=""
+  changed=$(jq -r '.changed' "$report")
+  comparison=$(jq -r '.comparison' "$report")
+  case "$comparison" in
+    unavailable) note="_The base commit is not in the checkout, so this report has no deltas._" ;;
+    none) note="_No base commit was given, so this report has no deltas._" ;;
+  esac
+  if [ "$changed" = "true" ]; then
     body="$marker"$'\n'"$markdown"
-  elif [ "$(jq -r '.comparison' "$report")" = "unavailable" ]; then
-    # Without the base commit there are no deltas, so "no changes" would be a
-    # guess; keep whatever the comment says now.
-    echo "::notice::The base commit is not available, so the budget comment was left unchanged."
-    return 0
+  elif [ "$comparison" != "available" ] && [ -n "$existing" ]; then
+    # Without deltas, "no changes" would be a guess, and keeping the old
+    # comment could leave a stale breach; show the current numbers instead.
+    body="$marker"$'\n'"$markdown"
   elif [ -n "$existing" ]; then
-    body="$marker"$'\n'"### Skill budget"$'\n\n'"No budget changes in the latest commit."
+    body="$marker"$'\n'"### Skill budget"$'\n\n'"No budget changes against the base."
   else
     echo "No budget changes; no comment needed."
     return 0
+  fi
+
+  if [ -n "$note" ]; then
+    body="$body"$'\n\n'"$note"
   fi
 
   if [ -n "$existing" ]; then
