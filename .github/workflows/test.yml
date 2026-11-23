@@ -2426,6 +2426,44 @@ jobs:
             exit 1
           fi
 
+      - name: Read a relative path with = and fences indented in lists
+        run: |
+          # awk would read x=1/SKILL.md as an assignment unless it is passed
+          # as a path; fences in list items are indented four spaces or more.
+          WORK="$RUNNER_TEMP/refs-equals"
+          mkdir -p "$WORK/x=1"
+          cat > "$WORK/x=1/SKILL.md" <<'EOF'
+          ---
+          name: x
+          description: Fixture skill with fences inside list items.
+          ---
+          # X
+
+          1. Build:
+
+              ```bash
+              task missing-in-list
+              ```
+
+             - Then:
+
+                 ```console
+                 $ task missing-in-nested-list
+                 output
+                 ```
+          EOF
+          OUT=$(mktemp)
+          (cd "$WORK" && INPUT_PATHS='x=1' INPUT_REPO_ROOT="$GITHUB_WORKSPACE/$REPO" GITHUB_OUTPUT="$OUT" \
+            bash "$GITHUB_WORKSPACE/skill-refs/refs.sh")
+          REPORT=$(sed -n 's/^report-file=//p' "$OUT")
+          jq . "$REPORT"
+          ACTUAL=$(jq -c '[.findings[] | [.file, .line, .rule, .reference]]' "$REPORT")
+          EXPECTED='[["x=1/SKILL.md",10,"task-unknown","task missing-in-list"],["x=1/SKILL.md",16,"task-unknown","task missing-in-nested-list"]]'
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "Error: unexpected findings: $ACTUAL"
+            exit 1
+          fi
+
       - name: Fail on findings when fail is set
         id: fail-findings
         continue-on-error: true

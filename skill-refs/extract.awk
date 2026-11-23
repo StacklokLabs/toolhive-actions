@@ -13,6 +13,17 @@
 # other languages are skipped. Commands are split at &&, ||, ;, |, ( and $(,
 # quotes are removed, and an unquoted # starts a comment.
 
+# awk reads an operand such as x=1/SKILL.md as a variable assignment, not a
+# file. Read those through ./ and report them under the name they were given.
+BEGIN {
+  for (i = 1; i < ARGC; i++) {
+    if (ARGV[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/) {
+      given["./" ARGV[i]] = ARGV[i]
+      ARGV[i] = "./" ARGV[i]
+    }
+  }
+}
+
 function reset_file() {
   in_frontmatter = 0
   fence_char = ""
@@ -70,7 +81,7 @@ function emit_commands(text, line,    i, c, n, word, in_word, quote, words, nwor
   cmd = ""
   for (i = 1; i <= nwords + 1; i++) {
     if (i > nwords || words[i] == SUBSEP) {
-      if (cmd != "") print "C\t" FILENAME "\t" line "\t" cmd
+      if (cmd != "") print "C\t" fname "\t" line "\t" cmd
       cmd = ""
       continue
     }
@@ -82,7 +93,7 @@ function emit_workflow_paths(text, line,    rest, path) {
   rest = text
   while (match(rest, /\.github\/workflows\/[A-Za-z0-9_.-]+/)) {
     path = substr(rest, RSTART, RLENGTH)
-    print "W\t" FILENAME "\t" line "\t" path
+    print "W\t" fname "\t" line "\t" path
     rest = substr(rest, RSTART + RLENGTH)
   }
 }
@@ -109,7 +120,7 @@ function scan_spans(text, line,    i, n, run, j, closing, span, k) {
     span = substr(text, i + run, closing - i - run)
     if (span ~ /^ .* $/ && span !~ /^ +$/) span = substr(span, 2, length(span) - 2)
     if (span != "") {
-      print "P\t" FILENAME "\t" line "\t" span
+      print "P\t" fname "\t" line "\t" span
       emit_commands(span, line)
     }
     i = closing + run
@@ -121,6 +132,7 @@ function scan_spans(text, line,    i, n, run, j, closing, span, k) {
 { sub(/\r$/, "") }
 
 FNR == 1 {
+  fname = (FILENAME in given) ? given[FILENAME] : FILENAME
   reset_file()
   if ($0 ~ /^---[ \t]*$/) { in_frontmatter = 1; next }
 }
@@ -133,7 +145,7 @@ in_frontmatter {
 fence_char != "" {
   # A closing fence uses the same character, at least as many times, and
   # has no info string.
-  if (match($0, /^ ? ? ?(`+|~+)[ \t]*$/)) {
+  if (match($0, /^[ \t]*(`+|~+)[ \t]*$/)) {
     marker = $0
     gsub(/[ \t]/, "", marker)
     if (substr(marker, 1, 1) == fence_char && length(marker) >= fence_len) {
@@ -166,9 +178,11 @@ fence_char != "" {
   next
 }
 
-match($0, /^ ? ? ?(```+|~~~+)/) {
+# Any indentation: fences inside list items are indented to the item's
+# content, often by four spaces or more.
+match($0, /^[ \t]*(```+|~~~+)/) {
   marker = substr($0, RSTART, RLENGTH)
-  sub(/^ +/, "", marker)
+  sub(/^[ \t]+/, "", marker)
   info = substr($0, RSTART + RLENGTH)
   # A backtick fence's info string cannot contain backticks.
   if (!(substr(marker, 1, 1) == "`" && info ~ /`/)) {
