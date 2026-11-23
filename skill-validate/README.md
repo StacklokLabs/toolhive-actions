@@ -23,7 +23,8 @@ The action runs `thv skill validate` for every directory with a `SKILL.md` and `
 
 - **A plain path** must be a skill or AI-tool plugin directory. Anything else fails the action.
 - **A glob pattern** (`*`, `?`, `[...]`) skips matches that are neither, so `skills/*` can sit next to a `README.md`. A pattern that matches no skill or plugin directory fails the action, so a moved directory isn't silently skipped.
-- **`**` is not supported.** List each level instead, for example `skills/*` and `plugins/*/skills/*`.
+- **`**` is not supported.** List each level instead, for example `skills/*` and `plugins/*`.
+- **A plugin's bundled skills** are validated with the plugin, under the plugin's rules, so don't list them separately: on their own, they would be checked under a skill's stricter rules and reported twice.
 - **A directory with both `SKILL.md` and `.claude-plugin/plugin.json`** fails the action, because it can't be both.
 
 ## Outputs
@@ -76,6 +77,8 @@ The action reports results in three places:
 GitHub shows at most 10 annotations of each type per step. With more findings, the step summary and the report file are the complete record.
 
 The action validates every directory before it fails, so one run shows all problems. It fails when any directory is invalid, or when `fail-on-warnings` is `'true'` and there are warnings; warnings stay warning annotations either way.
+
+If ToolHive returns no result for a directory, for example because its API server is unreachable, the action stops at that directory and fails without a summary or outputs, rather than report the directories it could not check as valid.
 
 ## Examples
 

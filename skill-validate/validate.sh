@@ -17,6 +17,9 @@
 
 set -euo pipefail
 
+# shellcheck source=lib/escape.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/escape.sh"
+
 # First thv release whose validate output includes structured findings.
 readonly FINDINGS_VERSION="v0.67.0"
 readonly SKILL_MARKER="SKILL.md"
@@ -84,7 +87,7 @@ check_fail_on_warnings() {
 # Arguments: path, type, targets file, seen file.
 add_target() {
   local path="$1" type="$2" targets="$3" seen="$4" real
-  real=$(cd "$path" && pwd -P)
+  real=$(cd -- "$path" && pwd -P)
   if grep -Fxq -- "$real" "$seen"; then
     return 0
   fi
@@ -119,7 +122,7 @@ resolve() {
     count=$((count + 1))
 
     if [[ "$entry" == *'**'* ]]; then
-      echo "::error::The 'paths' input does not support '**' ($entry). List each level instead, for example 'skills/*' and 'plugins/*/skills/*'."
+      echo "::error::The 'paths' input does not support '**' ($(escape_data "$entry")). List each level instead, for example 'skills/*' and 'plugins/*'; a plugin's bundled skills are validated with the plugin."
       failed=true
       continue
     fi
@@ -127,7 +130,7 @@ resolve() {
     if [[ "$entry" != *[*?[]* ]]; then
       path=$(normalize_path "$entry")
       if [ ! -d "$path" ]; then
-        echo "::error::Directory not found: $entry"
+        echo "::error::Directory not found: $(escape_data "$entry")"
         failed=true
         continue
       fi
@@ -135,11 +138,11 @@ resolve() {
       case "$type" in
         skill|plugin) add_target "$path" "$type" "$targets" "$seen" ;;
         both)
-          echo "::error::$entry has both $SKILL_MARKER and $PLUGIN_MARKER; a directory must be either a skill or an AI-tool plugin."
+          echo "::error::$(escape_data "$entry") has both $SKILL_MARKER and $PLUGIN_MARKER; a directory must be either a skill or an AI-tool plugin."
           failed=true
           ;;
         none)
-          echo "::error::$entry is not a skill or AI-tool plugin directory (no $SKILL_MARKER or $PLUGIN_MARKER)."
+          echo "::error::$(escape_data "$entry") is not a skill or AI-tool plugin directory (no $SKILL_MARKER or $PLUGIN_MARKER)."
           failed=true
           ;;
       esac
@@ -161,7 +164,7 @@ resolve() {
     for match in ${matches[@]+"${matches[@]}"}; do
       [ -d "$match" ] || continue
       if [[ "$match" == *$'\n'* || "$match" == *$'\r'* || "$match" == *$'\t'* ]]; then
-        echo "::error::Matched path contains a line break or tab, which is not supported: $match"
+        echo "::error::Matched path contains a line break or tab, which is not supported: $(escape_data "$match")"
         failed=true
         continue
       fi
@@ -173,14 +176,14 @@ resolve() {
           matched=$((matched + 1))
           ;;
         both)
-          echo "::error::$path has both $SKILL_MARKER and $PLUGIN_MARKER; a directory must be either a skill or an AI-tool plugin."
+          echo "::error::$(escape_data "$path") has both $SKILL_MARKER and $PLUGIN_MARKER; a directory must be either a skill or an AI-tool plugin."
           failed=true
           matched=$((matched + 1))
           ;;
       esac
     done
     if [ "$matched" -eq 0 ]; then
-      echo "::error::The pattern '$entry' matched no skill or AI-tool plugin directories."
+      echo "::error::The pattern '$(escape_data "$entry")' matched no skill or AI-tool plugin directories."
       failed=true
     fi
   done <<< "${INPUT_PATHS:-}"
@@ -193,18 +196,30 @@ resolve() {
     exit 1
   fi
 
+  # The runner trims leading spaces before looking for a command, so a line
+  # must not start with a directory name such as '::notice::'.
   echo "Directories to validate:"
   while IFS=$'\t' read -r type path; do
-    echo "  $path ($type)"
+    echo "  - $path ($type)"
   done < "$targets"
   write_output work-dir "$work_dir"
 }
 
-# Prints the path GitHub expects in an annotation: relative to the workspace.
+# Prints the directory prefix GitHub expects in an annotation: relative to the
+# workspace, and empty for the workspace itself. Relative paths are made
+# absolute first, so '.' and '../x' attach to the right file too.
 annotation_path() {
   local path="$1" workspace="${GITHUB_WORKSPACE:-}"
-  if [ -n "$workspace" ] && [[ "$path" == "$workspace"/* ]]; then
-    path="${path#"$workspace"/}"
+  if [[ "$path" != /* ]]; then
+    path=$(cd -- "$path" && pwd)
+  fi
+  if [ -n "$workspace" ]; then
+    workspace=$(cd -- "$workspace" && pwd)
+    if [ "$path" = "$workspace" ]; then
+      path=""
+    elif [[ "$path" == "$workspace"/* ]]; then
+      path="${path#"$workspace"/}"
+    fi
   fi
   printf '%s' "$path"
 }
@@ -216,19 +231,22 @@ validate() {
   local report="$work_dir/report.json"
   : > "$results"
 
-  local type path command output stderr_file rc
+  local type path command argument output stderr_file rc
   stderr_file="$work_dir/stderr"
   while IFS=$'\t' read -r type path; do
     case "$type" in
       skill) command=skill ;;
       plugin) command=ai-plugin ;;
-      *) echo "::error::Unknown target type '$type' for $path"; exit 1 ;;
+      *) echo "::error::Unknown target type '$type' for $(escape_data "$path")"; exit 1 ;;
     esac
 
-    echo "::group::thv $command validate $path"
+    echo "::group::thv $command validate $(escape_data "$path")"
+    # A name starting with '-' would be read as a flag.
+    argument="$path"
+    [[ "$argument" == -* ]] && argument="./$argument"
     # stdin is the target list; thv must not consume it.
     rc=0
-    output=$(thv "$command" validate --format json "$path" 2>"$stderr_file" < /dev/null) || rc=$?
+    output=$(thv "$command" validate --format json "$argument" 2>"$stderr_file" < /dev/null) || rc=$?
     cat "$stderr_file" >&2
     printf '%s\n' "$output"
     echo "::endgroup::"
@@ -240,7 +258,7 @@ validate() {
     if ! printf '%s' "$output" | jq -e -s \
         'length == 1 and (.[0] | type == "object" and (.valid | type == "boolean"))' \
         >/dev/null 2>&1; then
-      echo "::error::thv $command validate failed for $path (exit code $rc) without a validation result."
+      echo "::error::thv $command validate failed for $(escape_data "$path") (exit code $rc) without a validation result."
       exit 1
     fi
 
@@ -312,11 +330,12 @@ emit_annotations() {
     | if $r.findings then
         $r.findings[]
         | annotation(if .severity == "error" then "error" else "warning" end;
-                     "\($dir)/\(.file)"; (.line // 0); .rule; .message)
+                     (if $dir == "" then .file else "\($dir)/\(.file)" end); (.line // 0); .rule; .message)
       else
         (if $r.type == "skill" then $skill_marker else $plugin_marker end) as $marker
-        | ($r.errors[] | annotation("error"; "\($dir)/\($marker)"; 0; "thv validate"; .)),
-          ($r.warnings[] | annotation("warning"; "\($dir)/\($marker)"; 0; "thv validate"; .))
+        | (if $dir == "" then $marker else "\($dir)/\($marker)" end) as $file
+        | ($r.errors[] | annotation("error"; $file; 0; "thv validate"; .)),
+          ($r.warnings[] | annotation("warning"; $file; 0; "thv validate"; .))
       end
   ' --slurp "$1"
 }
