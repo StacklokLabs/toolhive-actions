@@ -1406,6 +1406,23 @@ jobs:
             cp -R "$FIXTURES/skills/alpha" "$RUNNER_TEMP/bad-names-$NAME/$NAME"
           done
 
+      - name: Reject a root with a tab or line break
+        run: |
+          for ROOT in $'tab\troot' $'line\nroot'; do
+            mkdir -p "$RUNNER_TEMP/$ROOT"
+            cp -R "$FIXTURES/skills/alpha" "$RUNNER_TEMP/$ROOT/alpha"
+            if GITHUB_OUTPUT=/dev/null INPUT_ROOT="$RUNNER_TEMP/$ROOT" INPUT_REGISTRY_PREFIX="$SKILLS_PREFIX" \
+              INPUT_TAGS=must-not-build INPUT_PUSH=false INPUT_VALIDATE=false \
+              bash skills-publish/publish.sh discover > "$RUNNER_TEMP/odd-root.log" 2>&1; then
+              cat "$RUNNER_TEMP/odd-root.log"
+              echo "Error: a root with a tab or line break was accepted"
+              exit 1
+            fi
+            cat "$RUNNER_TEMP/odd-root.log"
+            grep -Fqx "::error::The 'root' input must not contain a tab or line break." "$RUNNER_TEMP/odd-root.log" \
+              || { echo "Error: the root was not refused for its tab or line break"; exit 1; }
+          done
+
       - name: Reject an uppercase directory name
         id: uppercase-name
         continue-on-error: true

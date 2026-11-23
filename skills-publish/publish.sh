@@ -126,6 +126,13 @@ discover_root() {
   local dir name found=0
 
   root="${root%/}"
+  # The target list holds one tab-separated directory per line.
+  case "$root" in
+    *$'\t'* | *$'\n'*)
+      echo "::error::The '$input' input must not contain a tab or line break."
+      exit 1
+      ;;
+  esac
   if [ ! -d "$root" ]; then
     echo "::error::The '$input' directory was not found: $root"
     exit 1
