@@ -2464,6 +2464,29 @@ jobs:
             exit 1
           fi
 
+      - name: Copy the repository with an included Taskfile that does not parse
+        run: |
+          cp -R "$REPO" "$RUNNER_TEMP/refs-broken-include"
+          printf 'version: 3\ntasks: [unclosed\n' > "$RUNNER_TEMP/refs-broken-include/docs/Taskfile.yml"
+
+      - name: Fail when an included Taskfile does not parse
+        id: broken-include
+        continue-on-error: true
+        uses: ./skill-refs
+        with:
+          paths: ${{ runner.temp }}/refs-broken-include/skills/clean-skill
+          repo-root: ${{ runner.temp }}/refs-broken-include
+
+      - name: Reject an empty fail value
+        id: empty-fail
+        continue-on-error: true
+        uses: ./skill-refs
+        with:
+          paths: ${{ env.REPO }}/skills/broken-path
+          repo-root: ${{ env.REPO }}
+          # An unset repository variable expands to an empty string.
+          fail: ${{ vars.TOOLHIVE_ACTIONS_UNSET_VARIABLE }}
+
       - name: Fail on findings when fail is set
         id: fail-findings
         continue-on-error: true
@@ -2514,6 +2537,8 @@ jobs:
             missing-root=${{ steps.missing-root.outcome }}
             bad-fail=${{ steps.bad-fail.outcome }}
             plugin-path=${{ steps.plugin-path.outcome }}
+            broken-include=${{ steps.broken-include.outcome }}
+            empty-fail=${{ steps.empty-fail.outcome }}
         run: |
           FAILED=false
           for ENTRY in $OUTCOMES; do

@@ -93,7 +93,21 @@ load_taskfile() {
   local repo_root="$1" taskfile namespace target include_dir included aliases alias task flatten prefix
   taskfile=$(find_taskfile "$repo_root") || return 0
   HAS_TASKFILE=true
-  KNOWN_TASKS=$(taskfile_tasks "$taskfile")
+  # Task fails on a Taskfile it cannot parse, and so does this check, rather
+  # than report every task as undefined.
+  if ! KNOWN_TASKS=$(taskfile_tasks "$taskfile"); then
+    echo "::error::Could not parse $taskfile."
+    exit 1
+  fi
+  local includes tasks
+  if ! includes=$(yq '(.includes // {}) | to_entries | .[] |
+      [.key,
+       (.value | select(tag == "!!str")) // .value.taskfile // "",
+       ((.value | select(tag == "!!map") | .flatten) // false),
+       (((.value | select(tag == "!!map") | .aliases) // []) | join(" "))] | @tsv' "$taskfile"); then
+    echo "::error::Could not read the includes of $taskfile."
+    exit 1
+  fi
 
   # One level of includes: "<namespace>\t<taskfile>\t<flatten>\t<aliases>".
   while IFS=$'\t' read -r namespace target flatten aliases; do
@@ -121,6 +135,10 @@ load_taskfile() {
       done
       continue
     fi
+    if ! tasks=$(taskfile_tasks "$included"); then
+      echo "::error::Could not parse $included, included as '$namespace' by $taskfile."
+      exit 1
+    fi
     # As Task resolves them: a flattened include adds its tasks without a
     # namespace, and its namespace is not a valid prefix. Otherwise tasks are
     # <namespace>:<task> (also under namespace aliases), and an included
@@ -137,12 +155,8 @@ load_taskfile() {
           KNOWN_TASKS="${KNOWN_TASKS}"$'\n'"${prefix}"
         fi
       done
-    done <<< "$(taskfile_tasks "$included")"
-  done <<< "$(yq '(.includes // {}) | to_entries | .[] |
-      [.key,
-       (.value | select(tag == "!!str")) // .value.taskfile // "",
-       ((.value | select(tag == "!!map") | .flatten) // false),
-       (((.value | select(tag == "!!map") | .aliases) // []) | join(" "))] | @tsv' "$taskfile")"
+    done <<< "$tasks"
+  done <<< "$includes"
 }
 
 load_workflows() {
@@ -341,7 +355,8 @@ scan_skill() {
 }
 
 main() {
-  case "${INPUT_FAIL:-false}" in
+  # No fallback for an empty value, which would silently disable failing.
+  case "${INPUT_FAIL-false}" in
     true|false) ;;
     *) echo "::error::The 'fail' input must be exactly 'true' or 'false'."; exit 1 ;;
   esac

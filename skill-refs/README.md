@@ -8,7 +8,7 @@ The action needs no ToolHive installation: it reads files with `awk`, `jq` and `
 
 ## What is checked
 
-The action reads only code: inline code spans, and fenced blocks tagged `bash`, `sh`, `shell`, `zsh` or `console` or left untagged. Files with CRLF line endings are read the same way. Prose, frontmatter and fences in other languages are skipped. In `console` fences, only lines starting with `$ ` are commands.
+The action reads only code: inline code spans, and fenced blocks tagged `bash`, `sh`, `shell`, `zsh` or `console` or left untagged. Fences can be indented any amount, as they are inside list items. Files with CRLF line endings are read the same way. Prose, frontmatter and fences in other languages are skipped. In `console` fences, only lines starting with `$ ` are commands.
 
 It scans `SKILL.md` and every other `*.md` file in each skill, except files under `assets/`, which hold templates and examples rather than references. A symlinked skill directory is followed.
 
@@ -45,7 +45,7 @@ Some invocations are never flagged:
 - tasks in a remote, templated or missing include, because they can't be resolved; when such an include is flattened, no `task` target is checked;
 - `task --dir …` and `task --taskfile …`, which use another Taskfile.
 
-Without a Taskfile, `task` isn't checked.
+Without a Taskfile, `task` isn't checked. A Taskfile or local include that doesn't parse fails the action, as it would fail Task, rather than report its tasks as undefined.
 
 ### Workflows
 
