@@ -107,28 +107,14 @@ runs:
           TAG_REFERENCES=("$INPUT_TAG")
         fi
 
+        # Command substitution, not process substitution, so a failed build
+        # fails this step.
+        BUILT=$(bash "$GITHUB_ACTION_PATH/../lib/build.sh" build skill "$INPUT_PATH" \
+          ${TAG_REFERENCES[@]+"${TAG_REFERENCES[@]}"})
         BUILT_REFERENCES=()
-        if [ ${#TAG_REFERENCES[@]} -eq 0 ]; then
-          echo "Building skill from $INPUT_PATH..."
-          REFERENCE=$(thv skill build "$INPUT_PATH" | tail -1)
-          if [ -z "$REFERENCE" ]; then
-            echo "::error::Skill build returned an empty reference."
-            exit 1
-          fi
+        while IFS= read -r REFERENCE; do
           BUILT_REFERENCES+=("$REFERENCE")
-          echo "Built skill: $REFERENCE"
-        else
-          for TAG_REFERENCE in "${TAG_REFERENCES[@]}"; do
-            echo "Building skill from $INPUT_PATH..."
-            REFERENCE=$(thv skill build "$INPUT_PATH" --tag "$TAG_REFERENCE" | tail -1)
-            if [ -z "$REFERENCE" ]; then
-              echo "::error::Skill build returned an empty reference."
-              exit 1
-            fi
-            BUILT_REFERENCES+=("$REFERENCE")
-            echo "Built skill: $REFERENCE"
-          done
-        fi
+        done <<< "$BUILT"
 
         echo "reference=${BUILT_REFERENCES[0]}" >> "$GITHUB_OUTPUT"
         DELIMITER="ghadelimiter_${RANDOM}_${RANDOM}_$$"
@@ -148,12 +134,11 @@ runs:
         TOOLHIVE_API_URL: ${{ steps.daemon.outputs.url }}
         REFERENCES: ${{ steps.build.outputs.references }}
       run: |
+        PUSH_REFERENCES=()
         while IFS= read -r REFERENCE || [ -n "$REFERENCE" ]; do
-          [ -z "$REFERENCE" ] && continue
-          echo "Pushing $REFERENCE..."
-          thv skill push "$REFERENCE"
-          echo "Pushed skill: $REFERENCE"
+          [ -n "$REFERENCE" ] && PUSH_REFERENCES+=("$REFERENCE")
         done <<< "$REFERENCES"
+        bash "$GITHUB_ACTION_PATH/../lib/build.sh" push skill "${PUSH_REFERENCES[@]}"
 
     - name: Stop ToolHive Daemon
       if: always() && steps.daemon.outputs.started == 'true'

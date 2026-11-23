@@ -1,0 +1,98 @@
+name: 'Publish ToolHive Skills and AI Plugins'
+description: 'Validate, build and push every skill and AI-tool plugin under a directory as signed OCI artifacts'
+author: 'Stacklok'
+branding:
+  icon: 'upload-cloud'
+  color: 'purple'
+
+inputs:
+  root:
+    description: 'Directory whose immediate subdirectories are skills (each with a SKILL.md)'
+    required: false
+    default: 'skills'
+  plugins-root:
+    description: 'Optional directory whose immediate subdirectories are AI-tool plugins (each with .claude-plugin/plugin.json)'
+    required: false
+    default: ''
+  registry-prefix:
+    description: 'Lowercase OCI repository prefix for skills, for example ghcr.io/org/repo/skills. Each skill is published as <prefix>/<directory name>:<tag>.'
+    required: true
+  plugins-registry-prefix:
+    description: 'Lowercase OCI repository prefix for AI-tool plugins. Defaults to registry-prefix.'
+    required: false
+    default: ''
+  tags:
+    description: 'Newline-delimited plain tags applied to every skill and plugin, for example v1.2.0 and latest'
+    required: true
+  push:
+    description: "Push every built artifact. Accepts exactly 'true' or 'false'. 'true' requires a trusted event and 'id-token: write'."
+    required: false
+    default: 'false'
+  validate:
+    description: "Validate every directory before building. Accepts exactly 'true' or 'false'."
+    required: false
+    default: 'true'
+
+outputs:
+  references:
+    description: "Newline-delimited references that were pushed and signed, or built when push is 'false'"
+    value: ${{ steps.publish.outputs.references }}
+  references-json:
+    description: 'JSON object mapping each directory name to the list of its references in the references output'
+    value: ${{ steps.publish.outputs.references-json }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check Inputs and Discover Directories
+      id: discover
+      shell: bash
+      env:
+        INPUT_ROOT: ${{ inputs.root }}
+        INPUT_PLUGINS_ROOT: ${{ inputs.plugins-root }}
+        INPUT_REGISTRY_PREFIX: ${{ inputs.registry-prefix }}
+        INPUT_PLUGINS_REGISTRY_PREFIX: ${{ inputs.plugins-registry-prefix }}
+        INPUT_TAGS: ${{ inputs.tags }}
+        INPUT_PUSH: ${{ inputs.push }}
+        INPUT_VALIDATE: ${{ inputs.validate }}
+      run: bash "$GITHUB_ACTION_PATH/publish.sh" discover
+
+    - name: Start ToolHive Daemon
+      id: daemon
+      shell: bash
+      env:
+        INPUT_PUSH: ${{ inputs.push }}
+      # Pushing sends the job's OIDC token to the API server, so it never
+      # goes to a server that this action did not start.
+      run: |
+        if [ "$INPUT_PUSH" = "true" ]; then
+          bash "$GITHUB_ACTION_PATH/../lib/daemon.sh" start --owned
+        else
+          bash "$GITHUB_ACTION_PATH/../lib/daemon.sh" start
+        fi
+
+    - name: Validate Skills and AI Plugins
+      if: inputs.validate == 'true'
+      shell: bash
+      env:
+        TOOLHIVE_API_URL: ${{ steps.daemon.outputs.url }}
+        WORK_DIR: ${{ steps.discover.outputs.validate-work-dir }}
+        INPUT_FAIL_ON_WARNINGS: 'false'
+      run: bash "$GITHUB_ACTION_PATH/../skill-validate/validate.sh" validate
+
+    - name: Build and Push
+      id: publish
+      shell: bash
+      env:
+        TOOLHIVE_API_URL: ${{ steps.daemon.outputs.url }}
+        WORK_DIR: ${{ steps.discover.outputs.work-dir }}
+        INPUT_PUSH: ${{ inputs.push }}
+      run: bash "$GITHUB_ACTION_PATH/publish.sh" publish
+
+    - name: Stop ToolHive Daemon
+      if: always() && steps.daemon.outputs.started == 'true'
+      shell: bash
+      env:
+        DAEMON_PID: ${{ steps.daemon.outputs.pid }}
+        DAEMON_STARTED: ${{ steps.daemon.outputs.started }}
+      run: bash "$GITHUB_ACTION_PATH/../lib/daemon.sh" stop

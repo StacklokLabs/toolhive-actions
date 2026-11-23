@@ -1,0 +1,8 @@
+{
+  "name": "alpha",
+  "description": "Fixture AI-tool plugin whose name collides with the alpha skill",
+  "version": "0.1.0",
+  "author": {
+    "name": "Stacklok"
+  }
+}
