@@ -1715,6 +1715,69 @@ jobs:
               and .skills[0].delta == {skill_md_tokens: 4, skill_md_lines: 1, directory_tokens: 4, description_tokens: 0}' \
             "$ROOT_REPORT" >/dev/null || fail "unexpected report for a root skill"
 
+      - name: Create a repository with symlinks and a submodule
+        id: links-repo
+        env:
+          REPO: ${{ runner.temp }}/budget-links
+          SUBMODULE: ${{ runner.temp }}/budget-submodule
+        run: |
+          commit() {
+            git -C "$1" add -A
+            git -C "$1" -c user.name=ci -c user.email=ci@example.com commit -q -m "$2"
+          }
+          mkdir -p "$SUBMODULE"
+          git -C "$SUBMODULE" init -q
+          echo "Vendored text that must not count." > "$SUBMODULE/notes.md"
+          commit "$SUBMODULE" vendored
+          mkdir -p "$REPO/skills" "$REPO/shared"
+          cp -R "$FIXTURES/small-skill" "$REPO/skills/"
+          cp -R "$FIXTURES/small-skill" "$REPO/shared/linked-skill"
+          ln -s ../../shared/linked-skill/SKILL.md "$REPO/skills/small-skill/link.md"
+          ln -s ../shared/linked-skill "$REPO/skills/linked-skill"
+          git -C "$REPO" init -q
+          git -C "$REPO" -c protocol.file.allow=always submodule add -q "$SUBMODULE" skills/small-skill/vendor
+          commit "$REPO" base
+          echo "base=$(git -C "$REPO" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Measure unchanged skills with symlinks and a submodule
+        id: links
+        uses: ./skill-budget
+        with:
+          paths: ${{ runner.temp }}/budget-links/skills/*
+          base-ref: ${{ steps.links-repo.outputs.base }}
+
+      - name: Verify symlinks and submodules give no deltas
+        env:
+          REPORT_FILE: ${{ steps.links.outputs.report-file }}
+        run: |
+          jq . "$REPORT_FILE"
+          jq -e '(.skills | map({key: .name, value: {current, base_status, delta}}) | from_entries) == {
+              "linked-skill": {current: {skill_md_tokens: 54, skill_md_lines: 10, directory_tokens: 67, description_tokens: 22},
+                base_status: "found", delta: {skill_md_tokens: 0, skill_md_lines: 0, directory_tokens: 0, description_tokens: 0}},
+              "small-skill": {current: {skill_md_tokens: 54, skill_md_lines: 10, directory_tokens: 67, description_tokens: 22},
+                base_status: "found", delta: {skill_md_tokens: 0, skill_md_lines: 0, directory_tokens: 0, description_tokens: 0}}}
+              and (.changed | not)' "$REPORT_FILE" >/dev/null \
+            || { echo "Error: symlinks or the submodule were counted, or counted differently at the base"; exit 1; }
+
+      - name: Fail on a file that cannot be read
+        id: unreadable
+        env:
+          SKILL: ${{ runner.temp }}/budget-unreadable/small-skill
+        run: |
+          # root reads any file, so the check needs a regular user.
+          if [ "$(id -u)" = "0" ]; then
+            echo "Running as root; skipping."
+            exit 0
+          fi
+          mkdir -p "$(dirname "$SKILL")"
+          cp -R "$FIXTURES/small-skill" "$SKILL"
+          chmod 000 "$SKILL/SKILL.md"
+          if GITHUB_OUTPUT=/dev/null INPUT_PATHS="$SKILL" bash ./skill-budget/budget.sh measure; then
+            echo "Error: an unreadable file was skipped instead of failing"
+            exit 1
+          fi
+          chmod 644 "$SKILL/SKILL.md"
+
       - name: Verify deltas
         env:
           FAIL_OUTCOME: ${{ steps.fail-over-budget.outcome }}

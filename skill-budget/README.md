@@ -8,7 +8,7 @@ Agents load every skill's `description` in every session, load a skill's `SKILL.
 |--------|------------------|
 | SKILL.md tokens | Estimated tokens of `SKILL.md`, checked against `max-skill-tokens` |
 | SKILL.md lines | Lines of `SKILL.md`, checked against `max-skill-lines` |
-| Directory tokens | Estimated tokens of every text file in the skill directory; binary files are skipped |
+| Directory tokens | Estimated tokens of every text file in the skill directory; binary files, symlinks and submodules are skipped |
 | Description tokens | Estimated tokens of the frontmatter `description` |
 
 A total of all description tokens follows the table.

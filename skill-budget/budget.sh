@@ -84,15 +84,31 @@ description_chars() {
   printf '%s' "$description" | jq -R -s 'length'
 }
 
-# Text files only: binary files are not read into an agent's context.
+# Text files only: binary files are not read into an agent's context. A file
+# that cannot be read fails the step rather than counting as binary.
 is_text_file() {
-  [ -s "$1" ] && LC_ALL=C grep -Iq '' "$1"
+  [ -s "$1" ] || return 1
+  local status=0
+  LC_ALL=C grep -Iq '' "$1" || status=$?
+  case "$status" in
+    0) return 0 ;;
+    1) return 1 ;;
+    *)
+      echo "::error::Could not read $1." >&2
+      exit 1
+      ;;
+  esac
 }
 
-# Prints the metrics of a skill directory on disk as JSON.
+# Prints the metrics of a skill directory on disk as JSON. Counts regular
+# files only, like measure_commit: symlinks and nested repositories such as
+# submodules are skipped. -H follows a symlinked skill directory itself.
 measure_dir() {
   local dir="$1" file directory_chars=0 chars list
-  list=$(list_to_file find "$dir" -name .git -prune -o -type f -print0) || exit 1
+  # shellcheck disable=SC2016 # $1 expands in the inner sh.
+  list=$(list_to_file find -H "$dir" -mindepth 1 \
+    \( -name .git -o \( -type d -exec sh -c 'test -e "$1/.git"' sh {} \; \) \) -prune \
+    -o -type f -print0) || exit 1
   while IFS= read -r -d '' file; do
     if is_text_file "$file"; then
       chars=$(file_chars "$file")
@@ -111,17 +127,25 @@ measure_dir() {
 
 # Prints the metrics of a skill directory at a commit as JSON. Arguments:
 # repository, commit, directory path relative to the repository root (empty
-# or ending in /), scratch directory.
+# or ending in /), scratch directory. Only regular files are written, so
+# symlinks and submodules are skipped as on disk.
 measure_commit() {
-  local repo="$1" commit="$2" prefix="$3" scratch="$4" file target list
+  local repo="$1" commit="$2" prefix="$3" scratch="$4" entry meta file target list
   rm -rf "$scratch"
   mkdir -p "$scratch"
   # An empty prefix is the repository root, which git names "." here.
-  list=$(list_to_file git -C "$repo" ls-tree -r -z --name-only "$commit" -- "${prefix:-.}") || exit 1
-  while IFS= read -r -d '' file; do
+  list=$(list_to_file git -C "$repo" ls-tree -r -z "$commit" -- "${prefix:-.}") || exit 1
+  # Entries are "<mode> <type> <object>\t<path>".
+  while IFS= read -r -d '' entry; do
+    meta="${entry%%$'\t'*}"
+    file="${entry#*$'\t'}"
+    case "${meta%% *}" in
+      100644|100755) ;;
+      *) continue ;;
+    esac
     target="$scratch/${file#"$prefix"}"
     mkdir -p "$(dirname "$target")"
-    git -C "$repo" show "$commit:$file" > "$target" || exit 1
+    git -C "$repo" cat-file blob "${meta##* }" > "$target" || exit 1
   done < "$list"
   rm -f "$list"
   measure_dir "$scratch"
