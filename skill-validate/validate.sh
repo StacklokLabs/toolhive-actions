@@ -226,8 +226,9 @@ validate() {
     esac
 
     echo "::group::thv $command validate $path"
+    # stdin is the target list; thv must not consume it.
     rc=0
-    output=$(thv "$command" validate --format json "$path" 2>"$stderr_file") || rc=$?
+    output=$(thv "$command" validate --format json "$path" 2>"$stderr_file" < /dev/null) || rc=$?
     cat "$stderr_file" >&2
     printf '%s\n' "$output"
     echo "::endgroup::"
