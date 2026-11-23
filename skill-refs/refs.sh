@@ -37,6 +37,7 @@ ALLOW_PATHS=""
 ALLOW_TASKS=""
 ALLOW_WORKFLOWS=""
 KNOWN_TASKS=""
+INTERNAL_TASKS=""
 UNKNOWN_NAMESPACES=""
 KNOWN_WORKFLOWS=""
 HAS_TASKFILE=false
@@ -83,10 +84,28 @@ find_taskfile() {
   return 1
 }
 
-# Prints the task names and aliases a Taskfile defines.
+# Prints the task names and aliases a Taskfile defines, except internal
+# tasks, which Task does not run from the command line.
 taskfile_tasks() {
   yq '(.tasks // {}) | to_entries | .[] |
+      select((.value | tag) != "!!map" or (.value.internal // false) != true) |
       [.key] + ((select(.value | tag == "!!map") | .value.aliases) // []) | .[]' "$1"
+}
+
+# Prints the names and aliases of a Taskfile's internal tasks.
+taskfile_internal_tasks() {
+  yq '(.tasks // {}) | to_entries | .[] |
+      select((.value | tag) == "!!map" and (.value.internal // false) == true) |
+      [.key] + (.value.aliases // []) | .[]' "$1"
+}
+
+# Prints "<namespace>\t<taskfile>\t<flatten>\t<aliases>" for each include.
+taskfile_includes() {
+  yq '(.includes // {}) | to_entries | .[] |
+      [.key,
+       (.value | select(tag == "!!str")) // .value.taskfile // "",
+       ((.value | select(tag == "!!map") | .flatten) // false),
+       (((.value | select(tag == "!!map") | .aliases) // []) | join(" "))] | @tsv' "$1"
 }
 
 load_taskfile() {
@@ -95,17 +114,13 @@ load_taskfile() {
   HAS_TASKFILE=true
   # Task fails on a Taskfile it cannot parse, and so does this check, rather
   # than report every task as undefined.
-  if ! KNOWN_TASKS=$(taskfile_tasks "$taskfile"); then
-    echo "::error::Could not parse $taskfile."
+  if ! KNOWN_TASKS=$(taskfile_tasks "$taskfile") || ! INTERNAL_TASKS=$(taskfile_internal_tasks "$taskfile"); then
+    echo "::error::Could not parse $(escape_data "$taskfile")."
     exit 1
   fi
-  local includes tasks
-  if ! includes=$(yq '(.includes // {}) | to_entries | .[] |
-      [.key,
-       (.value | select(tag == "!!str")) // .value.taskfile // "",
-       ((.value | select(tag == "!!map") | .flatten) // false),
-       (((.value | select(tag == "!!map") | .aliases) // []) | join(" "))] | @tsv' "$taskfile"); then
-    echo "::error::Could not read the includes of $taskfile."
+  local includes tasks internal nested sub nested_flatten nested_aliases name
+  if ! includes=$(taskfile_includes "$taskfile"); then
+    echo "::error::Could not read the includes of $(escape_data "$taskfile")."
     exit 1
   fi
 
@@ -135,8 +150,9 @@ load_taskfile() {
       done
       continue
     fi
-    if ! tasks=$(taskfile_tasks "$included"); then
-      echo "::error::Could not parse $included, included as '$namespace' by $taskfile."
+    if ! tasks=$(taskfile_tasks "$included") || ! internal=$(taskfile_internal_tasks "$included") \
+      || ! nested=$(taskfile_includes "$included"); then
+      echo "::error::Could not parse $(escape_data "$included"), included as '$(escape_data "$namespace")' by $(escape_data "$taskfile")."
       exit 1
     fi
     # As Task resolves them: a flattened include adds its tasks without a
@@ -156,6 +172,40 @@ load_taskfile() {
         fi
       done
     done <<< "$tasks"
+    while IFS= read -r task; do
+      [ -z "$task" ] && continue
+      if [ "$flatten" = "true" ]; then
+        INTERNAL_TASKS="${INTERNAL_TASKS}"$'\n'"${task}"
+        continue
+      fi
+      for prefix in $namespace $aliases; do
+        INTERNAL_TASKS="${INTERNAL_TASKS}"$'\n'"${prefix}:${task}"
+      done
+    done <<< "$internal"
+    # The include's own includes are read no further: their tasks are unknown,
+    # under <namespace>:<sub>, or under <namespace> itself when flattened.
+    while IFS=$'\t' read -r sub _ nested_flatten nested_aliases; do
+      [ -z "$sub" ] && continue
+      if [ "$flatten" = "true" ]; then
+        if [ "$nested_flatten" = "true" ]; then
+          UNKNOWN_FLAT=true
+        else
+          for name in $sub $nested_aliases; do
+            UNKNOWN_NAMESPACES="${UNKNOWN_NAMESPACES}${name}"$'\n'
+          done
+        fi
+        continue
+      fi
+      for prefix in $namespace $aliases; do
+        if [ "$nested_flatten" = "true" ]; then
+          UNKNOWN_NAMESPACES="${UNKNOWN_NAMESPACES}${prefix}"$'\n'
+          continue
+        fi
+        for name in $sub $nested_aliases; do
+          UNKNOWN_NAMESPACES="${UNKNOWN_NAMESPACES}${prefix}:${name}"$'\n'
+        done
+      done
+    done <<< "$nested"
   done <<< "$includes"
 }
 
@@ -254,13 +304,21 @@ check_task() {
     if $skip_next; then skip_next=false; continue; fi
     case "$word" in
       --) break ;;
-      -d|--dir|-t|--taskfile|--dir=*|--taskfile=*|-d?*|-t?*) return 0 ;;
+      -d|--dir|-t|--taskfile|--dir=*|--taskfile=*|-d?*|-t?*|--completion|--completion=*) return 0 ;;
       -o|--output|-C|--concurrency|-I|--interval|--sort) skip_next=true; continue ;;
       # A redirection target, as in "> out.log".
       '>'|'>>'|'<'|[0-9]'>'|[0-9]'>>') skip_next=true; continue ;;
       -*|*=*|*'$'*|*'{{'*|*'*'*|*'`'*|*'>'*|*'<'*) continue ;;
+      # Placeholders such as [target], TARGET or ...
+      *'['*|*']'*|*...*|*…*) continue ;;
     esac
+    [[ "$word" =~ ^[A-Z][A-Z0-9_]*$ ]] && continue
     target="$word"
+    if contains_line "$target" "$INTERNAL_TASKS" && ! matches_pattern "$target" "$ALLOW_TASKS"; then
+      add_finding "$file" "$line" task-unknown "task $target" \
+        "Task '$target' is internal, so Task does not run it from the command line."
+      continue
+    fi
     if contains_line "$target" "$KNOWN_TASKS" || matches_pattern "$target" "$KNOWN_TASKS"; then
       continue
     fi
@@ -321,30 +379,41 @@ scan_skill() {
   records="$WORK_DIR/records.tsv"
   # -H follows a symlinked skill directory itself.
   if ! find -H "$skill" -type f -name '*.md' -not -path "$skill/assets/*" -print0 | sort -z > "$list"; then
-    echo "::error::Could not list the Markdown files of $skill."
+    echo "::error::Could not list the Markdown files of $(escape_data "$skill")."
     exit 1
   fi
   while IFS= read -r -d '' file; do
     files+=("$file")
   done < "$list"
+  # find -type f skips symlinks, which ToolHive rejects in a skill directory.
+  if ! find -H "$skill" -type l -name '*.md' -not -path "$skill/assets/*" -print0 | sort -z > "$list"; then
+    echo "::error::Could not list the Markdown files of $(escape_data "$skill")."
+    exit 1
+  fi
+  while IFS= read -r -d '' file; do
+    echo "::warning::Skipping $(escape_data "$file"): a symlink, which ToolHive does not allow in a skill directory."
+  done < "$list"
   [ "${#files[@]}" -eq 0 ] && return 0
 
   if ! awk -f "$SCRIPT_DIR/extract.awk" "${files[@]}" > "$records"; then
-    echo "::error::Could not read the Markdown files of $skill."
+    echo "::error::Could not read the Markdown files of $(escape_data "$skill")."
     exit 1
   fi
   while IFS=$'\t' read -r kind file line text; do
     case "$kind" in
       P) check_path "$file" "$line" "$text" "$skill" "$repo_root" "$skill_from_root" ;;
-      C)
+      C|D)
         IFS=$'\037' read -r -a words <<< "$text"
         # Skip leading VAR=value assignments.
         while [ "${#words[@]}" -gt 0 ] && [[ "${words[0]}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; do
           words=("${words[@]:1}")
         done
         [ "${#words[@]}" -eq 0 ] && continue
+        # After a cd, task reads the Taskfile of another directory.
         if [ "${words[0]}" = task ]; then
-          check_task "$file" "$line" "${words[@]:1}"
+          if [ "$kind" = C ]; then
+            check_task "$file" "$line" "${words[@]:1}"
+          fi
         elif [ "${#words[@]}" -ge 3 ] && [ "${words[0]}" = gh ] && [ "${words[1]}" = workflow ] && [ "${words[2]}" = run ]; then
           check_workflow_run "$file" "$line" "${words[@]:3}"
         fi
@@ -372,14 +441,14 @@ main() {
   repo_root="${repo_root%/}"
   [ -z "$repo_root" ] && repo_root="/"
   if [ ! -d "$repo_root" ]; then
-    echo "::error::The 'repo-root' directory was not found: $repo_root"
+    echo "::error::The 'repo-root' directory was not found: $(escape_data "$repo_root")"
     exit 1
   fi
 
   local allowlist="${INPUT_ALLOWLIST:-}"
   if [ -n "$allowlist" ]; then
     if [ ! -f "$allowlist" ]; then
-      echo "::error::The allowlist file was not found: $allowlist"
+      echo "::error::The allowlist file was not found: $(escape_data "$allowlist")"
       exit 1
     fi
     load_allowlist "$allowlist"

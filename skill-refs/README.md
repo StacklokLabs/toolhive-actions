@@ -8,14 +8,14 @@ The action needs no ToolHive installation: it reads files with `awk`, `jq` and `
 
 ## What is checked
 
-The action reads only code: inline code spans, and fenced blocks tagged `bash`, `sh`, `shell`, `zsh` or `console` or left untagged. Fences can be indented any amount, as they are inside list items. Files with CRLF line endings are read the same way. Prose, frontmatter and fences in other languages are skipped. In `console` fences, only lines starting with `$ ` are commands.
+The action reads only code: inline code spans, and fenced blocks tagged `bash`, `sh`, `shell`, `zsh` or `console` or left untagged. A code span can wrap onto the next lines of its paragraph, and in a table row `\|` is a pipe. Fences can be indented any amount, as they are inside list items, or open on a list item's own line. Files with CRLF line endings are read the same way. Prose, frontmatter and fences in other languages are skipped. In `console` fences, only lines starting with `$ ` are commands, together with the lines that continue one after a `\`.
 
-It scans `SKILL.md` and every other `*.md` file in each skill, except files under `assets/`, which hold templates and examples rather than references. A symlinked skill directory is followed.
+It scans `SKILL.md` and every other `*.md` file in each skill, except files under `assets/`, which hold templates and examples rather than references. A symlinked skill directory is followed. A symlinked Markdown file inside a skill is skipped with a warning, because ToolHive does not allow symlinks in a skill directory.
 
 | Rule | Finding |
 |------|---------|
 | `path-unresolved` | A backticked path that exists neither next to the Markdown file, in the skill, next to the skill (a sibling skill), nor under `repo-root` |
-| `task-unknown` | `task <target>` for a target the repository Taskfile does not define |
+| `task-unknown` | `task <target>` for a target the repository Taskfile does not define, or defines as `internal` |
 | `workflow-unknown` | `gh workflow run <workflow>`, or a `.github/workflows/<file>` path in a shell fence, for a workflow that does not exist |
 
 ### Paths
@@ -41,15 +41,21 @@ The root Taskfile (`Taskfile.yml`, `Taskfile.yaml`, `Taskfile.dist.yml`, … in 
 - the root Taskfile's tasks and their aliases, with wildcard tasks such as `release:*` matching as patterns;
 - tasks from local `includes` one level deep, resolved as Task does: as `<namespace>:<task>` and under namespace aliases, with an included `default` task also running as the bare `<namespace>`; with `flatten: true`, only as `<task>`.
 
+Tasks marked `internal: true` are reported, because Task does not run them from the command line.
+
 Some invocations are never flagged:
 - tasks in a remote, templated or missing include, because they can't be resolved; when such an include is flattened, no `task` target is checked;
-- `task --dir …` and `task --taskfile …`, which use another Taskfile.
+- tasks in an include's own includes, which are not read: `<namespace>:<sub>:…`, or any task under `<namespace>` when the nested include is flattened;
+- `task --dir …` and `task --taskfile …`, which use another Taskfile, and `task` after a `cd` or `pushd` earlier in the same code span or fence, as in `cd web && task dev`, which runs in another directory;
+- placeholders such as `task [target]`, `task TARGET` or `task …`, and `task --completion`.
 
 Without a Taskfile, `task` isn't checked. A Taskfile or local include that doesn't parse fails the action, as it would fail Task, rather than report its tasks as undefined.
 
 ### Workflows
 
 `gh workflow run` accepts a workflow file name or the workflow's `name:`, and both count. Runs with `-R` or `--repo` target another repository and are skipped, as are numeric workflow IDs.
+
+A `.github/workflows/<file>.yml` or `.yaml` path counts only where a word starts, as in `cat .github/workflows/ci.yml` or `--file=./.github/workflows/ci.yml`. Words with a URL or an `@ref`, such as reusable workflows in another repository, are skipped. A skill that creates a workflow, as in `cp template.yml .github/workflows/new.yml`, is still flagged; add a `workflow:` allowlist entry for it.
 
 ## Allowlist
 
